@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
 <meta name="theme-color" content="#1a3a5c">
 <title>Shared Firearms Inventory</title>
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -32,18 +32,36 @@
   .sv-nfa { font-size: 0.62rem; background: var(--red); color: #fff; padding: 1px 6px; border-radius: 4px; vertical-align: middle; }
   .sv-sub { color: var(--text2); font-size: 0.78rem; margin-bottom: 10px; }
   .sv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .sv-grid label { display: block; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text3); font-weight: 600; }
-  .sv-grid span { font-size: 0.82rem; font-weight: 600; }
+  .sv-grid div { min-width: 0; }
+  .sv-grid dt { display: block; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text3); font-weight: 600; }
+  .sv-grid dd { font-size: 0.82rem; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
   .sv-h2 { margin: 28px 0 12px; font-size: 1.1rem; }
   .sv-table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border-light); border-radius: 10px; overflow: hidden; font-size: 0.84rem; }
   .sv-table th, .sv-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-light); }
   .sv-table th { background: var(--bg2); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text2); }
+  .sv-table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 10px; }
+  .sv-table caption { text-align: left; font-size: 1.1rem; font-weight: 700; padding: 0 0 12px; color: var(--text); }
   .sv-footer { margin: 28px 0 8px; text-align: center; color: var(--text3); font-size: 0.74rem; }
+  .sv-code-card h1 { color: var(--text); margin-bottom: 8px; }
+  .sv-code-card form { display: grid; gap: 10px; margin-top: 18px; text-align: left; }
+  .sv-code-card input { min-height: 44px; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: var(--bg); color: var(--text); }
+  .sv-code-error { color: var(--red); font-weight: 600; font-size: .82rem; }
+  a:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  @media (max-width: 600px) {
+    body.share-body { padding: 14px 12px; }
+    .sv-header { align-items: center; margin-bottom: 14px; }
+    .sv-header h1 { font-size: 1.25rem; }
+    .sv-kpis { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+    .sv-kpi { padding: 12px; }
+    .sv-cards { grid-template-columns: 1fr; gap: 12px; }
+    .sv-table { min-width: 620px; }
+    .btn { min-height: 44px; }
+  }
   @media print { body.share-body { background: #fff; } .sv-header button { display: none; } .sv-card, .sv-kpi { box-shadow: none; } }
 </style>
 </head>
 <body class="share-body">
-  <div id="shareView" class="share-view"><div class="sv-msg">Loading…</div></div>
+  <main id="shareView" class="share-view" aria-live="polite" aria-busy="true"><div class="sv-msg" role="status">Loading&hellip;</div></main>
   <script src="js/config.js"></script>
   <script src="js/supabase-client.js"></script>
   <script src="js/share.js"></script>

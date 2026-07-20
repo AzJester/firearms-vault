@@ -1,13 +1,20 @@
 /*
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
+  Strict-Transport-Security: max-age=31536000
   Referrer-Policy: no-referrer
   Permissions-Policy: camera=(self), geolocation=(), microphone=(), payment=(), usb=()
-  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; font-src 'self'; manifest-src 'self'; media-src 'self' data: blob:
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; font-src 'self'; manifest-src 'self'; media-src 'self' data: blob:
   X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex
 
 /sw.js
   Cache-Control: no-cache, no-store, must-revalidate
+  Service-Worker-Allowed: /
 
 /js/config.js
+  Cache-Control: no-cache, no-store, must-revalidate
+
+/build-info.json
   Cache-Control: no-cache, no-store, must-revalidate

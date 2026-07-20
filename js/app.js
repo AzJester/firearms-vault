@@ -1,7 +1,7 @@
 // =====================================================
 // APP VERSION
 // =====================================================
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '2.1.0';
 
 // =====================================================
 // DATA STRUCTURE & STATE
@@ -66,6 +66,315 @@ function toast(message, type, timeout) {
   setTimeout(remove, timeout || (type === 'error' ? 6000 : 3800));
 }
 window.toast = toast;
+
+// =====================================================
+// SAVE STATUS + DEVICE PRIVACY
+// =====================================================
+// CloudSync calls this hook too, so local and cloud persistence share one
+// calm, non-popup status message. Errors remain visible until a later save.
+function setSaveStatus(state, detail) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  const labels = {
+    saving: 'Saving…', saved: 'Saved', local: 'Offline — saved on this device',
+    offline: 'Offline — saved on this device', failed: 'Save failed — retrying',
+    conflict: 'Save needs attention', degraded: 'Cloud unavailable — saved locally',
+    syncing: 'Syncing…'
+  };
+  const kinds = { saving: 'syncing', syncing: 'syncing', saved: 'ok', local: 'local', offline: 'local', failed: 'error', conflict: 'error', degraded: 'error' };
+  el.dataset.saveState = state || '';
+  el.dataset.kind = kinds[state] || el.dataset.kind || '';
+  el.textContent = detail || labels[state] || 'Saved';
+}
+window.setSaveStatus = setSaveStatus;
+
+function showPersistentFeatureError(message) {
+  let alert = document.querySelector('#featureLoadError');
+  if (!alert) {
+    alert = document.createElement('div');
+    alert.id = 'featureLoadError'; alert.className = 'feature-load-error'; alert.setAttribute('role', 'alert');
+    const text = document.createElement('span'); text.className = 'feature-load-error-text';
+    const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.setAttribute('aria-label', 'Dismiss feature error'); dismiss.innerHTML = '&times;';
+    dismiss.addEventListener('click', () => alert.remove());
+    alert.append(text, dismiss);
+    const statusBar = document.querySelector('.file-status-bar');
+    if (statusBar) statusBar.insertAdjacentElement('afterend', alert); else document.body.prepend(alert);
+  }
+  alert.querySelector('.feature-load-error-text').textContent = message;
+}
+
+async function ensureFeatureAsset(group, label) {
+  try {
+    if (!window.VaultAssets) throw new Error('Feature loader is unavailable.');
+    await window.VaultAssets.ensure(group);
+    return true;
+  } catch (error) {
+    const message = (label || 'This feature') + ' could not load. Check your connection and try again.';
+    setSaveStatus('failed', message);
+    showPersistentFeatureError(message);
+    toast(message, 'error', 10000);
+    console.error('Optional feature load failed:', group, error);
+    return false;
+  }
+}
+
+const PRIVACY_MODE_KEY = 'firearms_vault_privacy_mode';
+let privacyMode = false;
+try { privacyMode = localStorage.getItem(PRIVACY_MODE_KEY) === 'true'; } catch (_) {}
+
+function refreshSensitiveElements(root) {
+  const scope = root && root.querySelectorAll ? root : document;
+  ['statValue', 'authedEmail', 'settingsEmail'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.classList.add('sensitive-value');
+  });
+  scope.querySelectorAll('.mono-id, [data-sensitive]').forEach(el => el.classList.add('sensitive-value'));
+  scope.querySelectorAll('input[type="email"], input[id*="Serial"], input[id*="Price"], input[id*="FFL"]').forEach(el => el.classList.add('sensitive-input'));
+  scope.querySelectorAll('.card-detail, .detail-field, .sv-grid > div, .dash-kpi, .dash-list-item').forEach(group => {
+    const label = group.querySelector('label, .dash-kpi-label, .label');
+    if (!label || !/(serial|value|price|investment|budget|email|ffl)/i.test(label.textContent)) return;
+    group.querySelectorAll('span, .dash-kpi-value, .value, input').forEach(el => el.classList.add(el.matches('input') ? 'sensitive-input' : 'sensitive-value'));
+  });
+  scope.querySelectorAll('td, span, div').forEach(el => {
+    if (el.children.length === 0 && /^\s*\$[\d,.]+\s*$/.test(el.textContent || '')) el.classList.add('sensitive-value');
+  });
+  scope.querySelectorAll('.sensitive-value').forEach(el => {
+    if (privacyMode) { el.setAttribute('aria-hidden', 'true'); el.dataset.privacyHidden = 'true'; }
+    else if (el.dataset.privacyHidden === 'true') { el.removeAttribute('aria-hidden'); delete el.dataset.privacyHidden; }
+  });
+}
+
+function setPrivacyMode(enabled) {
+  privacyMode = !!enabled;
+  document.body.classList.toggle('privacy-mode', privacyMode);
+  try { localStorage.setItem(PRIVACY_MODE_KEY, String(privacyMode)); } catch (_) {}
+  const btn = document.getElementById('privacyToggle');
+  if (btn) {
+    btn.setAttribute('aria-pressed', String(privacyMode));
+    btn.setAttribute('aria-label', privacyMode ? 'Reveal sensitive information' : 'Hide sensitive information');
+    btn.title = privacyMode ? 'Reveal sensitive information' : 'Hide sensitive information';
+    btn.classList.toggle('active', privacyMode);
+  }
+  const setting = document.getElementById('privacySetting');
+  if (setting && setting.checked !== privacyMode) setting.checked = privacyMode;
+  refreshSensitiveElements(document);
+}
+function togglePrivacyMode() { setPrivacyMode(!privacyMode); }
+window.setPrivacyMode = setPrivacyMode;
+window.togglePrivacyMode = togglePrivacyMode;
+
+function runDataQualityCheck() {
+  const result = document.getElementById('dataQualityResult');
+  const apply = document.getElementById('applyDataQualityBtn');
+  if (!window.VaultDataQuality) { result.textContent = 'The data-quality checker is unavailable.'; return; }
+  const report = VaultDataQuality.analyze(db);
+  const warnings = report.findings.filter(item => item.severity === 'warning').length;
+  const errors = report.findings.filter(item => item.severity === 'error').length;
+  result.innerHTML = '<strong>' + report.safeFixes + '</strong> safe formatting cleanup' + (report.safeFixes === 1 ? '' : 's') +
+    ' available. <strong>' + warnings + '</strong> item' + (warnings === 1 ? '' : 's') +
+    ' need manual review' + (errors ? ', and <strong>' + errors + '</strong> invalid record value' + (errors === 1 ? '' : 's') : '') + '.' +
+    (report.duplicateSerials ? '<br><span class="quality-warning">Possible duplicate serials were found. They will not be merged automatically.</span>' : '');
+  apply.style.display = report.safeFixes ? 'inline-flex' : 'none';
+}
+
+async function applyDataQualityCleanup() {
+  if (!window.VaultDataQuality) return;
+  const approved = await confirmDialog('Apply whitespace, capitalization, and duplicate-tag cleanup? No records will be deleted or merged.', {
+    title: 'Apply safe data cleanup', okText: 'Apply cleanup'
+  });
+  if (!approved) return;
+  try {
+    if (window.VaultDataSafety && window.CloudSync && CloudSync.uid) {
+      await VaultDataSafety.createBackup(CloudSync.uid, db, 'before-data-cleanup');
+    }
+    const outcome = VaultDataQuality.applySafeFixes(db);
+    if (outcome.changed) {
+      addAuditEntry('edit', 'system', 'Data Quality Cleanup', outcome.changed + ' safe normalization changes');
+      await saveData();
+      render();
+    }
+    runDataQualityCheck();
+    toast(outcome.changed ? 'Safe data cleanup applied.' : 'No safe cleanup was needed.', 'success');
+  } catch (error) {
+    toast('Data cleanup failed: ' + error.message, 'error');
+  }
+}
+window.runDataQualityCheck = runDataQualityCheck;
+window.applyDataQualityCleanup = applyDataQualityCleanup;
+
+function formatStorageBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return value + ' B';
+  if (value < 1048576) return (value / 1024).toFixed(1) + ' KiB';
+  if (value < 1073741824) return (value / 1048576).toFixed(1) + ' MiB';
+  return (value / 1073741824).toFixed(2) + ' GiB';
+}
+
+async function refreshDataSafetyPanel() {
+  const cloud = document.getElementById('safetyCloud');
+  if (!cloud) return;
+  const pending = document.getElementById('safetyPending');
+  const backup = document.getElementById('safetyBackup');
+  const storage = document.getElementById('safetyStorage');
+  const build = document.getElementById('safetyBuild');
+  try {
+    cloud.textContent = window.CloudSync && CloudSync.uid
+      ? ((CloudSync.ready ? 'Connected' : 'Starting') + ' · revision ' + (Number(CloudSync.revision) || 0))
+      : 'Not signed in';
+    if (window.VaultDataSafety && window.CloudSync && CloudSync.uid) {
+      const [outbox, backups] = await Promise.all([
+        VaultDataSafety.listOutbox(CloudSync.uid), VaultDataSafety.listBackups(CloudSync.uid)
+      ]);
+      const scopedPending = await CloudSync.storeGet('outbox', CloudSync.uid).catch(() => null);
+      const count = Math.max(outbox.length, scopedPending ? 1 : 0);
+      pending.textContent = count ? count + ' safely queued' : 'None';
+      backup.textContent = backups.length ? new Date(backups[0].createdAt).toLocaleString() : 'Not created yet';
+    } else {
+      pending.textContent = 'Unavailable'; backup.textContent = 'Unavailable';
+    }
+    if (navigator.storage && navigator.storage.estimate) {
+      const estimate = await navigator.storage.estimate();
+      storage.textContent = formatStorageBytes(estimate.usage) + ' of ' + formatStorageBytes(estimate.quota);
+    } else storage.textContent = 'Estimate unavailable';
+    const response = await fetch('build-info.json', { cache: 'no-store' });
+    if (response.ok) {
+      const info = await response.json();
+      build.textContent = info.buildId || info.version || APP_VERSION;
+    } else build.textContent = APP_VERSION + ' (development)';
+  } catch (error) {
+    console.warn('Data-safety panel refresh failed:', error);
+  }
+}
+
+async function runDataSafetyCheck() {
+  const result = document.getElementById('safetyCheckResult');
+  result.textContent = 'Checking local integrity and cloud write/delete canary…';
+  try {
+    if (!window.CloudSync || !CloudSync.uid || !window.VaultDataSafety) throw new Error('Sign in before running this check.');
+    const state = await VaultDataSafety.getState(CloudSync.uid);
+    if (!state || !state.data || !state.checksum) throw new Error('No durable local state is available yet. Make a change or sync first.');
+    const actual = await VaultDataSafety.digestText(JSON.stringify(state.data));
+    if (actual !== state.checksum) throw new Error('The local integrity checksum does not match.');
+    const canary = await window.sbClient.rpc('run_health_check_canary', { p_source: 'in-app-safety-check' });
+    if (canary.error) throw canary.error;
+    if (!canary.data || canary.data.ok !== true) throw new Error('The cloud canary did not confirm its cleanup.');
+    result.textContent = 'Passed: local checksum verified and the isolated cloud write/delete canary completed.';
+    await refreshDataSafetyPanel();
+  } catch (error) {
+    result.textContent = 'Safety check needs attention: ' + (error.message || error);
+  }
+}
+async function cleanUnusedMedia() {
+  const result = document.getElementById('safetyCheckResult');
+  result.textContent = 'Checking retained recovery versions and media…';
+  try {
+    if (!window.CloudSync || typeof CloudSync.cleanupOrphanMedia !== 'function') throw new Error('Media cleanup is unavailable.');
+    const scan = await CloudSync.cleanupOrphanMedia({ dryRun: true });
+    if (!scan.ok) throw new Error((scan.error && scan.error.message) || 'Media history could not be checked.');
+    if (!scan.unused.length) { result.textContent = 'No unused media objects were found.'; return; }
+    const approved = await confirmDialog('Remove ' + scan.unused.length + ' media object' + (scan.unused.length === 1 ? '' : 's') + ' that are not referenced by the current collection or any retained recovery version?', {
+      title: 'Clean unused media', okText: 'Remove unused media', danger: true
+    });
+    if (!approved) { result.textContent = 'Media cleanup cancelled.'; return; }
+    const cleaned = await CloudSync.cleanupOrphanMedia({ dryRun: false });
+    if (!cleaned.ok) throw new Error((cleaned.error && cleaned.error.message) || 'Some media could not be removed.');
+    result.textContent = 'Removed ' + cleaned.removed.length + ' unused media object' + (cleaned.removed.length === 1 ? '' : 's') + '.';
+  } catch (error) {
+    result.textContent = 'Media cleanup needs attention: ' + (error.message || error);
+  }
+}
+window.refreshDataSafetyPanel = refreshDataSafetyPanel;
+window.runDataSafetyCheck = runDataSafetyCheck;
+window.cleanUnusedMedia = cleanUnusedMedia;
+window.addEventListener('firearms-vault-sync-state', () => refreshDataSafetyPanel());
+
+// =====================================================
+// SAFE RICH TEXT
+// =====================================================
+// Notes are rich text, but imported backups must never be able to inject
+// scripts, event handlers, styles, SVG, or unsafe URL schemes.
+function sanitizeRichText(value) {
+  if (window.VaultSecurity && typeof window.VaultSecurity.sanitizeRichText === 'function') {
+    return window.VaultSecurity.sanitizeRichText(value);
+  }
+  if (!value || value === '<br>') return '';
+  const template = document.createElement('template');
+  template.innerHTML = String(value);
+  const allowed = new Set(['P', 'BR', 'DIV', 'B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'A']);
+  const nodes = Array.from(template.content.querySelectorAll('*')).reverse();
+  nodes.forEach(node => {
+    if (!allowed.has(node.tagName)) {
+      const text = document.createTextNode(node.textContent || '');
+      node.replaceWith(text);
+      return;
+    }
+    const original = node.tagName === 'A' ? String(node.getAttribute('href') || '').trim() : '';
+    Array.from(node.attributes).forEach(attr => node.removeAttribute(attr.name));
+    if (node.tagName === 'A') {
+      if (/^(https?:|mailto:)/i.test(original)) {
+        node.setAttribute('href', original);
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+  });
+  return template.innerHTML.trim();
+}
+
+function normalizeRichTextData() {
+  (db.firearms || []).forEach(f => {
+    f.notes = sanitizeRichText(f.notes);
+    f.dispNotes = sanitizeRichText(f.dispNotes);
+    (f.maintenanceLog || []).forEach(m => { m.description = sanitizeRichText(m.description); });
+  });
+  (db.ammo || []).forEach(a => { a.notes = sanitizeRichText(a.notes); });
+  (db.accessories || []).forEach(a => { a.notes = sanitizeRichText(a.notes); });
+  (db.wishlist || []).forEach(w => { w.notes = sanitizeRichText(w.notes); });
+  (db.dealers || []).forEach(d => { d.notes = sanitizeRichText(d.notes); });
+}
+function normalizeInternalIds() {
+  const valid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value);
+  const firearmMap = new Map();
+  const ensure = (record, map) => {
+    const old = record && record.id;
+    if (!record) return;
+    if (!valid(old)) record.id = generateId();
+    if (map && old !== record.id) map.set(String(old || ''), record.id);
+  };
+  (db.firearms || []).forEach(f => {
+    ensure(f, firearmMap);
+    (f.maintenanceLog || []).forEach(entry => ensure(entry));
+    (f.documents || []).forEach(doc => ensure(doc));
+    f.images = (f.images || []).filter(id => typeof id === 'string' && /^[A-Za-z0-9._-]{1,160}$/.test(id));
+  });
+  (db.ammo || []).forEach(a => ensure(a));
+  (db.accessories || []).forEach(a => { ensure(a); if (firearmMap.has(String(a.firearmId || ''))) a.firearmId = firearmMap.get(String(a.firearmId || '')); });
+  (db.wishlist || []).forEach(w => ensure(w));
+  (db.dealers || []).forEach(d => ensure(d));
+}
+window.sanitizeRichText = sanitizeRichText;
+
+function clearFieldError(input) {
+  if (!input) return;
+  input.removeAttribute('aria-invalid');
+  const id = input.getAttribute('aria-describedby');
+  if (id && id.endsWith('-error')) {
+    const err = document.getElementById(id); if (err) err.remove();
+    input.removeAttribute('aria-describedby');
+  }
+}
+function showFieldError(input, message) {
+  if (!input) return false;
+  clearFieldError(input);
+  const id = input.id + '-error';
+  const err = document.createElement('div');
+  err.id = id; err.className = 'field-error'; err.setAttribute('role', 'alert'); err.textContent = message;
+  input.setAttribute('aria-invalid', 'true');
+  input.setAttribute('aria-describedby', id);
+  input.insertAdjacentElement('afterend', err);
+  input.focus();
+  return false;
+}
+document.addEventListener('input', e => { if (e.target && e.target.matches('input, select, textarea, [contenteditable]')) clearFieldError(e.target); });
 
 // =====================================================
 // IMAGE LIGHTBOX
@@ -458,9 +767,15 @@ function showTagSuggestions() {
   const all = getAllTags().filter(t => t.toLowerCase().includes(val) && !tempTags.includes(t));
   if (all.length === 0) { sug.classList.remove('open'); return; }
 
-  sug.innerHTML = all.slice(0, 8).map(t =>
-    `<div onclick="selectTagSuggestion('${esc(t)}')">${esc(t)}</div>`
-  ).join('');
+  sug.replaceChildren();
+  all.slice(0, 8).forEach((tag) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'tag-suggestion';
+    option.textContent = tag;
+    option.addEventListener('click', () => selectTagSuggestion(tag));
+    sug.appendChild(option);
+  });
   sug.classList.add('open');
 }
 
@@ -599,6 +914,8 @@ async function writeToDisk() {
 }
 
 function onFileConnected() {
+  normalizeRichTextData();
+  normalizeInternalIds();
   const _wo = document.getElementById('welcomeOverlay'); if (_wo) _wo.style.display = 'none';
   document.getElementById('statusDot').className = 'file-status-dot connected';
   document.getElementById('fileStatusText').textContent = 'Connected:';
@@ -610,7 +927,7 @@ function onFileConnected() {
     document.getElementById('encryptionStatus').innerHTML = '';
   }
 
-  document.getElementById('backupBtn').style.display = db.backups.length > 0 ? 'inline-block' : 'none';
+  document.getElementById('backupBtn').style.display = 'inline-block';
   document.getElementById('settingsBtn').style.display = 'inline-block';
   document.getElementById('addFirearmBtn').style.display = 'inline-block';
   document.getElementById('addAmmoBtn').style.display = 'inline-block';
@@ -639,23 +956,17 @@ function disconnectFile() {
 }
 
 function showSaveIndicator() {
-  const el = document.getElementById('saveIndicator');
-  el.classList.add('show');
-  el.textContent = 'Saved ' + new Date().toLocaleTimeString();
-  setTimeout(() => el.classList.remove('show'), 2500);
+  setSaveStatus('saved', 'Saved ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
 }
 
 async function saveData() {
-  if (!db.backups) db.backups = [];
-  if (db.backups.length >= 10) db.backups.shift();
-  db.backups.push({
-    timestamp: new Date().toISOString(),
-    firearms: JSON.parse(JSON.stringify(db.firearms)),
-    ammo: JSON.parse(JSON.stringify(db.ammo)),
-    accessories: JSON.parse(JSON.stringify(db.accessories))
-  });
+  // Mark the in-memory edit unsafe before the first await. This matters for
+  // callers that intentionally do not await saveData(): closing during an
+  // export-file write must warn until IndexedDB or the scoped outbox commits.
+  hasUnsavedChanges = true;
+  setSaveStatus('saving');
   await writeToDisk();
-  saveToLocalStorage();
+  await saveToLocalStorage();
   updateStats();
 }
 
@@ -665,19 +976,23 @@ async function saveData() {
 async function encryptData(plaintext, password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
+  const iterations = 310000;
   const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
-  const keyBits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: 100000, hash: 'SHA-256' }, keyMaterial, 256);
+  const keyBits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations, hash: 'SHA-256' }, keyMaterial, 256);
   const key = await crypto.subtle.importKey('raw', keyBits, { name: 'AES-GCM' }, false, ['encrypt']);
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(plaintext));
-  return { encrypted: true, algorithm: 'AES-GCM', salt: Array.from(salt), iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)) };
+  return { encrypted: true, algorithm: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations, salt: Array.from(salt), iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)) };
 }
 
 async function decryptData(encryptedObj, password) {
+  if (!encryptedObj || !Array.isArray(encryptedObj.salt) || !Array.isArray(encryptedObj.iv) || !Array.isArray(encryptedObj.ciphertext)) throw new Error('Encrypted file format is invalid');
   const salt = new Uint8Array(encryptedObj.salt);
   const iv = new Uint8Array(encryptedObj.iv);
   const ciphertext = new Uint8Array(encryptedObj.ciphertext);
+  const iterations = Number(encryptedObj.iterations || 100000);
+  if (salt.length !== 16 || iv.length !== 12 || !Number.isInteger(iterations) || iterations < 100000 || iterations > 1000000) throw new Error('Encrypted file parameters are invalid');
   const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
-  const keyBits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: 100000, hash: 'SHA-256' }, keyMaterial, 256);
+  const keyBits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations, hash: 'SHA-256' }, keyMaterial, 256);
   const key = await crypto.subtle.importKey('raw', keyBits, { name: 'AES-GCM' }, false, ['decrypt']);
   try {
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, ciphertext);
@@ -696,25 +1011,32 @@ function openSettingsModal() {
     document.getElementById('decryptSection').style.display = 'none';
   }
   renderAuditTrail();
+  const privacySetting = document.getElementById('privacySetting');
+  if (privacySetting) privacySetting.checked = privacyMode;
+  if (typeof window.refreshMfaSettings === 'function') window.refreshMfaSettings();
+  refreshDataSafetyPanel();
   document.getElementById('settingsModal').classList.add('open');
 }
 
 function closeSettingsModal() {
   document.getElementById('settingsModal').classList.remove('open');
+  ['acctCurrentPassword', 'acctNewPassword', 'acctConfirmPassword'].forEach(id => { const field = document.getElementById(id); if (field) field.value = ''; });
   document.getElementById('newPassword').value = '';
   document.getElementById('confirmPassword').value = '';
+  if (typeof window.cancelMfaEnrollment === 'function') window.cancelMfaEnrollment({ silent: true }).catch(() => {});
 }
 
 async function setEncryption() {
-  const pwd = document.getElementById('newPassword').value.trim();
-  const conf = document.getElementById('confirmPassword').value.trim();
+  const pwd = document.getElementById('newPassword').value;
+  const conf = document.getElementById('confirmPassword').value;
   if (!pwd) { toast('Please enter a password.'); return; }
+  if (pwd.length < 12) { toast('Use at least 12 characters for local file encryption.', 'error'); return; }
   if (pwd !== conf) { toast('Passwords do not match.'); return; }
   db.encrypted = true;
   currentPassword = pwd;
   await saveData();
   closeSettingsModal();
-  toast('Encryption enabled. Your database is now encrypted.');
+  toast('Encryption enabled for the connected local export file. Cloud data and downloaded backups are unchanged.');
   location.reload();
 }
 
@@ -724,7 +1046,7 @@ async function removeEncryption() {
   currentPassword = null;
   await saveData();
   closeSettingsModal();
-  toast('Encryption removed.');
+  toast('Connected local export-file encryption removed.');
   location.reload();
 }
 
@@ -738,7 +1060,12 @@ async function handlePasswordSubmit() {
     const text = await file.text();
     const encrypted = JSON.parse(text);
     const decrypted = await decryptData(encrypted, pwd);
-    db = JSON.parse(decrypted);
+    const parsed = JSON.parse(decrypted);
+    db = window.VaultSecurity
+      ? window.VaultSecurity.normalizeDatabase(parsed, { regenerateInvalidIds: true, allowUnknownTopLevel: true }).data
+      : parsed;
+    normalizeRichTextData();
+    normalizeInternalIds();
     if (!db.auditTrail) db.auditTrail = [];
     db.firearms.forEach(f => { if (!f.tags) f.tags = []; });
     // Load images from IndexedDB (they are separate from JSON when encrypted too)
@@ -753,32 +1080,59 @@ async function handlePasswordSubmit() {
 // =====================================================
 // BACKUPS
 // =====================================================
-function openBackupModal() {
-  if (db.backups.length === 0) { toast('No backups available.'); return; }
+let durableBackupList = [];
+
+async function openBackupModal() {
   const list = document.getElementById('backupList');
-  list.innerHTML = db.backups.map((b, i) => `
-    <div class="backup-item" onclick="selectBackup(${i})">
-      <span>${new Date(b.timestamp).toLocaleString()}</span>
-      <span style="color: var(--text3); font-size: 0.8rem;">${b.firearms.length} firearms, ${b.ammo.length} ammo</span>
-    </div>
-  `).join('');
+  list.innerHTML = '<p class="backup-empty" role="status">Loading recovery points&hellip;</p>';
   document.getElementById('backupModal').classList.add('open');
+  durableBackupList = [];
+  try {
+    if (window.VaultDataSafety && window.CloudSync && CloudSync.uid) {
+      durableBackupList = await VaultDataSafety.listBackups(CloudSync.uid);
+    }
+  } catch (error) {
+    console.warn('Could not read recovery points:', error);
+  }
+  if (!durableBackupList.length) {
+    list.innerHTML = '<p class="backup-empty" role="status">No recovery points yet. They are created after successful cloud saves; you can download a full backup below at any time.</p>';
+    return;
+  }
+  list.innerHTML = durableBackupList.map((backup, index) => {
+    const counts = backup.counts || {};
+    const summary = [
+      (counts.firearms || 0) + ' firearms',
+      (counts.ammo || 0) + ' ammunition records',
+      (counts.accessories || 0) + ' accessories'
+    ].join(', ');
+    return '<button type="button" class="backup-item" onclick="selectBackup(' + index + ')">' +
+      '<span>' + esc(new Date(backup.createdAt).toLocaleString()) + '</span>' +
+      '<span class="backup-summary">' + esc(summary) + ' &middot; ' + esc(backup.reason || 'automatic') + '</span>' +
+      '</button>';
+  }).join('');
 }
 
 function closeBackupModal() { document.getElementById('backupModal').classList.remove('open'); }
 
 async function selectBackup(index) {
   if (!await confirmDialog('Restore this backup? Current data will be replaced.', { title: 'Restore backup', okText: 'Restore', danger: true })) return;
-  const backup = db.backups[index];
-  db.firearms = JSON.parse(JSON.stringify(backup.firearms));
-  db.ammo = JSON.parse(JSON.stringify(backup.ammo));
-  db.accessories = JSON.parse(JSON.stringify(backup.accessories || []));
-  db.firearms.forEach(f => { if (!f.tags) f.tags = []; });
-  addAuditEntry('edit', 'system', 'Backup Restore', 'Restored from backup dated ' + new Date(backup.timestamp).toLocaleString());
-  await saveData();
-  closeBackupModal();
-  render();
-  toast('Backup restored successfully.');
+  const backup = durableBackupList[index];
+  if (!backup || !window.VaultDataSafety || !window.CloudSync) { toast('That recovery point is unavailable.', 'error'); return; }
+  try {
+    if (!await VaultDataSafety.verifyBackup(backup)) throw new Error('The recovery-point integrity check failed.');
+    CloudSync.applyStructured(structuredClone(backup.data));
+    normalizeRichTextData();
+    normalizeInternalIds();
+    addAuditEntry('edit', 'system', 'Recovery Point Restore', 'Restored recovery point dated ' + new Date(backup.createdAt).toLocaleString());
+    const queued = await CloudSync.queueCurrentSnapshot('recovery-restore');
+    if (!queued.ok) throw new Error((queued.error && queued.error.message) || 'The restored copy could not be saved locally.');
+    const cloud = await CloudSync.push({ capture: false, reason: 'recovery-restore' });
+    closeBackupModal();
+    render();
+    toast(cloud.ok ? 'Recovery point restored and synced.' : 'Recovery point restored on this device; cloud sync will retry.', cloud.ok ? 'success' : 'info', 7000);
+  } catch (error) {
+    toast('Recovery failed: ' + error.message, 'error', 9000);
+  }
 }
 
 // =====================================================
@@ -794,7 +1148,7 @@ function updateStats() {
   document.getElementById('statValue').textContent = money(fVal + aVal);
   updateCaliberFilter();
   updateTagFilter();
-  document.getElementById('backupBtn').style.display = db.backups.length > 0 ? 'inline-block' : 'none';
+  document.getElementById('backupBtn').style.display = 'inline-block';
   updateReminderBadge();
 }
 
@@ -860,10 +1214,20 @@ function reminderGo(type, id) {
 // =====================================================
 // SHARE LINKS (read-only inventory for e.g. insurance)
 // =====================================================
-function shareUrl(token) { return new URL('share.html?t=' + token, location.href).href; }
+function shareUrl(token) {
+  const url = new URL('share.html', location.href);
+  url.search = '';
+  url.hash = 't=' + encodeURIComponent(String(token || ''));
+  return url.href;
+}
 
 function openShareModal() {
   const r = document.getElementById('shareResult'); if (r) r.style.display = 'none';
+  document.getElementById('sharePhotos').checked = false;
+  document.getElementById('shareSerials').checked = false;
+  document.getElementById('shareExpiry').value = '7';
+  document.getElementById('shareCode').value = '';
+  document.getElementById('shareMaxViews').value = '';
   document.getElementById('shareModal').classList.add('open');
   renderSharesList();
 }
@@ -900,25 +1264,53 @@ async function createShare() {
   const btn = document.getElementById('createShareBtn');
   btn.disabled = true; btn.textContent = 'Creating…';
   try {
+    const rawCode = document.getElementById('shareCode').value;
     const opts = {
       label: document.getElementById('shareLabel').value.trim(),
       photos: document.getElementById('sharePhotos').checked,
-      serials: document.getElementById('shareSerials').checked
+      serials: document.getElementById('shareSerials').checked,
+      code: rawCode.trim(),
+      maxViews: parseInt(document.getElementById('shareMaxViews').value, 10) || null
     };
+    if (rawCode && !opts.code) { toast('A passcode cannot contain only spaces.', 'error'); return; }
+    if (opts.code && opts.code.length < 12) { toast('A share passcode must contain at least 12 characters.', 'error'); return; }
+    if (opts.code && new TextEncoder().encode(opts.code).length > 72) { toast('A share passcode cannot exceed 72 bytes.', 'error'); return; }
     const expDays = parseInt(document.getElementById('shareExpiry').value);
+    if (opts.photos || opts.serials || expDays === 0) {
+      const included = [opts.photos ? 'photos' : '', opts.serials ? 'serial numbers' : '', expDays === 0 ? 'a link that never expires' : ''].filter(Boolean).join(', ');
+      const approved = await confirmDialog('This share includes ' + included + '. Anyone with the link can view those details. Continue?', {
+        title: 'Review sensitive share', okText: 'Create link'
+      });
+      if (!approved) return;
+    }
     const expires_at = expDays > 0 ? new Date(Date.now() + expDays * 86400000).toISOString() : null;
     const snapshot = await buildShareSnapshot(opts);
-    const { data, error } = await window.sbClient.from('shares')
-      .insert({ owner: CloudSync.uid, label: opts.label || null, snapshot, expires_at })
-      .select('token').single();
+    const { data, error } = await window.sbClient.rpc('create_inventory_share', {
+      p_label: opts.label || null,
+      p_snapshot: snapshot,
+      p_expires_at: expires_at,
+      p_access_code: opts.code || null,
+      p_max_views: opts.maxViews
+    });
     if (error) throw error;
-    const url = shareUrl(data.token);
+    const token = typeof data === 'string' ? data : data && data.token;
+    if (!token) throw new Error('The share service did not return a link token.');
+    const url = shareUrl(token);
     const box = document.getElementById('shareResult');
     box.style.display = 'block';
-    box.innerHTML = `<div class="share-result-box"><div style="font-weight:600;margin-bottom:6px;">&#10003; Share link created</div>
-      <div class="share-url">${esc(url)}</div>
-      <div style="margin-top:8px;"><button class="btn btn-small btn-primary" onclick="copyShareLink('${esc(url)}')">Copy link</button></div></div>`;
+    box.replaceChildren();
+    const result = document.createElement('div'); result.className = 'share-result-box';
+    const heading = document.createElement('div'); heading.style.fontWeight = '600'; heading.style.marginBottom = '6px';
+    heading.textContent = '✓ Share link created' + (opts.code ? ' · passcode protected' : '');
+    const urlText = document.createElement('div'); urlText.className = 'share-url'; urlText.textContent = url;
+    const actions = document.createElement('div'); actions.style.marginTop = '8px';
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn btn-small btn-primary'; copy.textContent = 'Copy link';
+    copy.addEventListener('click', () => copyShareLink(url));
+    actions.appendChild(copy); result.append(heading, urlText, actions); box.appendChild(result);
     document.getElementById('shareLabel').value = '';
+    document.getElementById('shareCode').value = '';
+    document.getElementById('shareMaxViews').value = '';
+    document.getElementById('shareModal').dataset.dirty = 'false';
     renderSharesList();
   } catch (e) {
     toast('Could not create share link: ' + (e.message || e), 'error');
@@ -936,25 +1328,36 @@ async function renderSharesList() {
   const list = document.getElementById('shareList');
   if (!list) return;
   list.innerHTML = '<div style="color:var(--text3);font-size:0.8rem;">Loading…</div>';
+  await window.sbClient.from('shares').delete().eq('owner', CloudSync.uid).lt('expires_at', new Date().toISOString());
   const { data, error } = await window.sbClient.from('shares')
-    .select('token,label,created_at,expires_at').eq('owner', CloudSync.uid).order('created_at', { ascending: false });
+    .select('token,label,created_at,expires_at,max_views,access_count,last_accessed_at,has_access_code').eq('owner', CloudSync.uid).order('created_at', { ascending: false });
   if (error) { list.innerHTML = '<div style="color:var(--red);font-size:0.8rem;">Could not load shares.</div>'; return; }
   if (!data.length) { list.innerHTML = '<div style="color:var(--text3);font-size:0.8rem;">No active share links.</div>'; return; }
   const now = Date.now();
-  list.innerHTML = data.map(s => {
+  list.replaceChildren();
+  data.forEach(s => {
     const url = shareUrl(s.token);
     const exp = s.expires_at ? (new Date(s.expires_at).getTime() < now ? 'Expired' : 'Expires ' + fmtDate(s.expires_at)) : 'No expiry';
-    return `<div class="share-row"><div class="share-row-info">
-      <div class="share-row-label">${esc(s.label || 'Untitled share')}</div>
-      <div class="share-row-meta">${exp} &middot; created ${fmtDate(s.created_at)}</div>
-      <div class="share-url">${esc(url)}</div></div>
-      <button class="btn btn-small btn-outline" onclick="copyShareLink('${esc(url)}')">Copy</button>
-      <button class="btn btn-small btn-danger" onclick="revokeShare('${s.token}')">Revoke</button></div>`;
-  }).join('');
+    const opens = (Number(s.access_count) || 0) + (s.max_views ? '/' + s.max_views : '') + ' open' + ((Number(s.access_count) || 0) === 1 ? '' : 's');
+    const metadata = [exp, opens, s.has_access_code ? 'passcode protected' : 'link only'];
+    if (s.last_accessed_at) metadata.push('last opened ' + fmtDate(s.last_accessed_at));
+    metadata.push('created ' + fmtDate(s.created_at));
+    const row = document.createElement('div'); row.className = 'share-row';
+    const info = document.createElement('div'); info.className = 'share-row-info';
+    const label = document.createElement('div'); label.className = 'share-row-label'; label.textContent = s.label || 'Untitled share';
+    const meta = document.createElement('div'); meta.className = 'share-row-meta'; meta.textContent = metadata.join(' · ');
+    const urlText = document.createElement('div'); urlText.className = 'share-url'; urlText.textContent = url;
+    info.append(label, meta, urlText);
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn btn-small btn-outline'; copy.textContent = 'Copy';
+    copy.addEventListener('click', () => copyShareLink(url));
+    const revoke = document.createElement('button'); revoke.type = 'button'; revoke.className = 'btn btn-small btn-danger'; revoke.textContent = 'Revoke';
+    revoke.addEventListener('click', () => revokeShare(s.token));
+    row.append(info, copy, revoke); list.appendChild(row);
+  });
 }
 
 async function revokeShare(token) {
-  if (!await confirmDialog('Revoke this share link? Anyone using it will immediately lose access.', { title: 'Revoke share link', okText: 'Revoke', danger: true })) return;
+  if (!await confirmDialog('Revoke this share link? This prevents future opens and reloads, but cannot recall a copy that someone already opened or saved.', { title: 'Revoke share link', okText: 'Revoke', danger: true })) return;
   const { error } = await window.sbClient.from('shares').delete().eq('token', token).eq('owner', CloudSync.uid);
   if (error) { toast('Could not revoke: ' + error.message, 'error'); return; }
   toast('Share link revoked.', 'success');
@@ -984,6 +1387,7 @@ function setView(v) {
 // DASHBOARD
 // =====================================================
 let _dashCharts = [];
+let _dashboardChartLoadStarted = false;
 function _destroyDashCharts() { _dashCharts.forEach(c => { try { c.destroy(); } catch (e) {} }); _dashCharts = []; }
 
 let _dashRange = 90;
@@ -991,6 +1395,17 @@ function setDashRange(n) { _dashRange = n; renderDashboard(); }
 window.setDashRange = setDashRange;
 
 function renderDashboard() {
+  if (!window.Chart && window.VaultAssets && !_dashboardChartLoadStarted) {
+    _dashboardChartLoadStarted = true;
+    window.VaultAssets.ensure('charts').then(() => {
+      if (currentTab === 'dashboard') renderDashboard();
+    }).catch(error => {
+      const message = 'Charts could not load; dashboard summaries remain available.';
+      setSaveStatus('failed', message);
+      showPersistentFeatureError(message);
+      console.error('Dashboard chart load failed', error);
+    });
+  }
   const container = document.getElementById('dashboardContainer');
   _destroyDashCharts();
   const active = db.firearms.filter(f => !f.status || f.status === 'Active');
@@ -1365,9 +1780,9 @@ function sortTable(key) { if(sortCol===key) sortDir=sortDir==='asc'?'desc':'asc'
 function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); } // safe inside double-quoted attributes
 // Read a rich-text (.rte-content) editor's HTML, treating an empty editor as ''.
-function rteValue(id) { const v = (document.getElementById(id).innerHTML || '').trim(); return v === '<br>' ? '' : v; }
+function rteValue(id) { return sanitizeRichText((document.getElementById(id).innerHTML || '').trim()); }
 // Render stored rich-text for display (skips the empty-<br> sentinel).
-function rteShow(html) { return (html && html !== '<br>') ? html : ''; }
+function rteShow(html) { return sanitizeRichText(html); }
 // Consistent friendly empty state for a tab (icon, title, optional sub + action button).
 function tabEmpty(icon, title, sub, actionHtml) {
   return '<div class="empty-inline"><div class="icon">' + icon + '</div><h3>' + esc(title) + '</h3>' +
@@ -1440,11 +1855,24 @@ async function rteLink() {
 // =====================================================
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => {
+      t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); t.tabIndex = -1;
+    });
     tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true'); tab.tabIndex = 0;
     currentTab = tab.dataset.tab;
     sortCol = null;
     render();
+  });
+  tab.addEventListener('keydown', e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const tabs = Array.from(document.querySelectorAll('.tab'));
+    let i = tabs.indexOf(tab);
+    if (e.key === 'Home') i = 0;
+    else if (e.key === 'End') i = tabs.length - 1;
+    else i = (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[i].focus(); tabs[i].click();
   });
 });
 
@@ -1462,6 +1890,7 @@ function openAddModal() {
   document.getElementById('modalTitle').textContent = 'Add Firearm';
   document.getElementById('saveBtn').textContent = 'Save Firearm';
   clearForm();
+  syncFirearmDisclosure(null);
   populateDispDealerPicker();
   document.getElementById('formModal').classList.add('open');
 }
@@ -1473,6 +1902,7 @@ function openEditModal(id) {
   document.getElementById('modalTitle').textContent = 'Edit Firearm';
   document.getElementById('saveBtn').textContent = 'Update Firearm';
   populateForm(f);
+  syncFirearmDisclosure(f);
   populateDispDealerPicker();
   document.getElementById('formModal').classList.add('open');
 }
@@ -1605,7 +2035,7 @@ document.getElementById('fStatus').addEventListener('change', toggleDispositionF
 async function saveFirearm() {
   const make=document.getElementById('fMake').value.trim();
   const model=document.getElementById('fModel').value.trim();
-  if(!make&&!model){toast('Please enter at least a Make or Model.');return;}
+  if(!make&&!model){showFieldError(document.getElementById('fMake'), 'Enter at least a manufacturer or model.');return;}
 
   const isNFA=document.getElementById('fIsNFA').checked;
   const status = document.getElementById('fStatus').value;
@@ -1621,7 +2051,7 @@ async function saveFirearm() {
     dateAcquired:document.getElementById('fDateAcquired').value,
     price:document.getElementById('fPrice').value,
     condition:document.getElementById('fCondition').value,
-    notes:document.getElementById('fNotes').innerHTML.trim(),
+    notes:rteValue('fNotes'),
     images: tempImages,
     tags: tempTags,
     isNFA,
@@ -1706,6 +2136,15 @@ function renderImageGallery() {
     </div>`;
   }).join('');
 }
+
+// The CSP-safe declarative action bridge cannot reach lexical `let` bindings.
+// Expose only the two narrow operations it needs for generated gallery controls.
+window.setVaultGalleryIndex = function setVaultGalleryIndex(index) {
+  currentImageIndex = Math.max(0, Number(index) || 0);
+};
+window.adjustVaultGalleryIndex = function adjustVaultGalleryIndex(delta) {
+  currentImageIndex = Math.max(0, currentImageIndex + (Number(delta) || 0));
+};
 
 function removeImage(idx) { tempImages.splice(idx, 1); currentImageIndex = 0; renderImageGallery(); }
 function resetImgUpload() { document.getElementById('imgUploadArea').innerHTML='<span class="upload-text">Click to upload images (or drag &amp; drop)</span>'; }
@@ -1836,7 +2275,7 @@ function closeAmmoModal() { document.getElementById('ammoModal').classList.remov
 
 async function saveAmmo() {
   const caliber = document.getElementById('aCaliber').value.trim();
-  if (!caliber) { toast('Please enter a caliber.'); return; }
+  if (!caliber) { showFieldError(document.getElementById('aCaliber'), 'Enter a caliber or gauge.'); return; }
   const data = {
     id: editingAmmoId || generateId(), caliber,
     brand: document.getElementById('aBrand').value.trim(),
@@ -1845,7 +2284,7 @@ async function saveAmmo() {
     pricePerRound: document.getElementById('aPricePerRound').value,
     location: document.getElementById('aLocation').value.trim(),
     lowStock: document.getElementById('aLowStock').value || 0,
-    notes: document.getElementById('aNotes').innerHTML.trim(),
+    notes: rteValue('aNotes'),
     receipt: tempReceipts.a, receiptName: tempReceipts.aName
   };
   const itemName = (data.brand || data.caliber);
@@ -1924,7 +2363,7 @@ function populateFirearmDropdown() {
 
 async function saveAccessory() {
   const name = document.getElementById('accName').value.trim();
-  if (!name) { toast('Please enter an accessory name.'); return; }
+  if (!name) { showFieldError(document.getElementById('accName'), 'Enter an accessory name.'); return; }
   const data = {
     id: editingAccessoryId || generateId(), name,
     category: document.getElementById('accCategory').value,
@@ -1935,7 +2374,7 @@ async function saveAccessory() {
     purchaseDate: document.getElementById('accDate').value,
     condition: document.getElementById('accCondition').value,
     firearmId: document.getElementById('accFirearm').value,
-    notes: document.getElementById('accNotes').innerHTML.trim(),
+    notes: rteValue('accNotes'),
     receipt: tempReceipts.acc, receiptName: tempReceipts.accName
   };
   if (editingAccessoryId) {
@@ -2174,8 +2613,8 @@ function openDetail(id) {
     f.documents.forEach(d => {
       const isPdf = (d.name || '').toLowerCase().endsWith('.pdf') || d.type === 'application/pdf';
       const icon = isPdf ? '&#128196;' : '&#129534;';
-      const open = d.data ? `<a class="doc-open" href="${d.data}" target="_blank" rel="noopener" onclick="event.stopPropagation();">View</a>
-        <a class="doc-open" href="${d.data}" download="${esc(d.name||'document')}" onclick="event.stopPropagation();">Download</a>`
+      const open = d.data ? `<button type="button" class="doc-open" onclick="event.stopPropagation();viewDocumentInBrowser('${f.id}','${d.id}')">View</button>
+        <button type="button" class="doc-open" onclick="event.stopPropagation();downloadDocument('${f.id}','${d.id}')">Download</button>`
         : '<span style="color:var(--text3);font-size:0.78rem;">syncing…</span>';
       docsH += `<div class="doc-chip"><span class="doc-chip-icon">${icon}</span><span class="doc-chip-name">${esc(d.name||'document')}</span>${open}</div>`;
     });
@@ -2213,10 +2652,63 @@ function openDetail(id) {
 
 function closeDetail(){ document.getElementById('detailView').classList.remove('open'); currentImageIndex = 0; }
 
+function attachmentObjectURL(value, options = {}) {
+  const source = String(value || '');
+  const match = /^data:([^;,]+)(;base64)?,([\s\S]*)$/i.exec(source);
+  if (!match) throw new Error('This attachment is not stored in a supported format.');
+  const mime = match[1].toLowerCase();
+  const allowed = options.pdfOnly
+    ? new Set(['application/pdf'])
+    : new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  if (!allowed.has(mime)) throw new Error('Only PDF and common image attachments can be opened.');
+  let bytes;
+  try {
+    if (match[2]) {
+      const decoded = atob(match[3].replace(/\s/g, ''));
+      bytes = Uint8Array.from(decoded, character => character.charCodeAt(0));
+    } else {
+      bytes = new TextEncoder().encode(decodeURIComponent(match[3]));
+    }
+  } catch (_) {
+    throw new Error('This attachment is damaged or incomplete.');
+  }
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
+}
+
+function openAttachment(value, options) {
+  let objectURL;
+  try {
+    objectURL = attachmentObjectURL(value, options);
+    const anchor = document.createElement('a');
+    anchor.href = objectURL;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
+  } catch (error) {
+    if (objectURL) URL.revokeObjectURL(objectURL);
+    toast(error.message || 'This attachment could not be opened.', 'error');
+  }
+}
+
+function downloadAttachment(value, filename) {
+  let objectURL;
+  try {
+    objectURL = attachmentObjectURL(value);
+    const anchor = document.createElement('a');
+    anchor.href = objectURL;
+    anchor.download = String(filename || 'attachment').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(objectURL), 30000);
+  } catch (error) {
+    if (objectURL) URL.revokeObjectURL(objectURL);
+    toast(error.message || 'This attachment could not be downloaded.', 'error');
+  }
+}
+
 function viewStampPdf(id){
   const f=db.firearms.find(x=>x.id===id); if(!f||!f.stampPdf) return;
-  const w=window.open();
-  w.document.write(`<html><head><title>Tax Stamp - ${esc(f.make)} ${esc(f.model)}</title></head><body style="margin:0;"><iframe src="${f.stampPdf}" style="width:100%;height:100vh;border:none;"></iframe></body></html>`);
+  openAttachment(f.stampPdf, { pdfOnly: true });
 }
 
 function viewReceiptInBrowser(id, type) {
@@ -2225,10 +2717,19 @@ function viewReceiptInBrowser(id, type) {
   else if (type === 'ammo') item = db.ammo.find(x => x.id === id);
   else if (type === 'accessories') item = db.accessories.find(x => x.id === id);
   if (!item || !item.receipt) return;
-  const isPdf = item.receiptName && item.receiptName.toLowerCase().endsWith('.pdf');
-  const w = window.open();
-  if (isPdf) w.document.write(`<html><head><title>Receipt</title></head><body style="margin:0;"><iframe src="${item.receipt}" style="width:100%;height:100vh;border:none;"></iframe></body></html>`);
-  else w.document.write(`<html><head><title>Receipt</title></head><body style="margin:0;background:#222;display:flex;justify-content:center;align-items:center;min-height:100vh;"><img src="${item.receipt}" style="max-width:100%;max-height:100vh;object-fit:contain;"></body></html>`);
+  openAttachment(item.receipt);
+}
+
+function viewDocumentInBrowser(firearmId, documentId) {
+  const firearm = db.firearms.find(item => item.id === firearmId);
+  const documentRecord = firearm && (firearm.documents || []).find(item => item.id === documentId);
+  if (documentRecord && documentRecord.data) openAttachment(documentRecord.data);
+}
+
+function downloadDocument(firearmId, documentId) {
+  const firearm = db.firearms.find(item => item.id === firearmId);
+  const documentRecord = firearm && (firearm.documents || []).find(item => item.id === documentId);
+  if (documentRecord && documentRecord.data) downloadAttachment(documentRecord.data, documentRecord.name || 'document');
 }
 
 // =====================================================
@@ -2236,6 +2737,7 @@ function viewReceiptInBrowser(id, type) {
 // =====================================================
 async function exportInsuranceReport() {
   if (db.firearms.length === 0) { toast('No firearms to export.'); return; }
+  if (!await ensureFeatureAsset('pdf', 'PDF export')) return;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
   doc.setFontSize(16); doc.text('Personal Firearms Inventory Report', 14, 15);
@@ -2278,6 +2780,7 @@ async function captureSnapshot() {
   const canvas = document.createElement('canvas');
   canvas.width = video.videoWidth; canvas.height = video.videoHeight;
   canvas.getContext('2d').drawImage(video, 0, 0);
+  if (!await ensureFeatureAsset('ocr', 'Serial-number scanning')) return;
   try {
     const { data: { text } } = await Tesseract.recognize(canvas, 'eng', {
       workerPath: 'vendor/tesseract/worker.min.js',
@@ -2301,8 +2804,9 @@ function searchScannedSerial() {
 // =====================================================
 // EXCEL EXPORT
 // =====================================================
-function exportExcel() {
+async function exportExcel() {
   if(db.firearms.length===0){toast('No data to export.');return;}
+  if (!await ensureFeatureAsset('excel', 'Excel export')) return;
   const allRows=db.firearms.map(f=>({'Make':f.make||'','Model':f.model||'','Serial Number':f.serial||'','Caliber':f.caliber||'','Type':f.type||'','Barrel Length':f.barrel||'','Date Acquired':fmtDate(f.dateAcquired),'Purchase Price':f.price?parseFloat(f.price):'','Condition':f.condition||'','Status':f.status||'Active','NFA Item':f.isNFA?'Yes':'No','Tags':(f.tags||[]).join(', '),'Notes':(f.notes||'').replace(/<[^>]*>/g,'')}));
   const nfaRows=db.firearms.filter(f=>f.isNFA).map(f=>{
     let w='';if(f.dateSubmitted&&f.dateApproved)w=Math.round((new Date(f.dateApproved)-new Date(f.dateSubmitted))/86400000);
@@ -2341,7 +2845,7 @@ function handleImport(event){
       else if(data.firearms && Array.isArray(data.firearms)) toImport = data.firearms;
       if(toImport.length === 0) throw new Error('No firearms found');
       if(await confirmDialog(`Import ${toImport.length} firearm(s)? This will ADD to your existing database.`, { title: 'Import firearms', okText: 'Import' })){
-        toImport.forEach(item=>{if(!item.id)item.id=generateId();if(!item.tags)item.tags=[];db.firearms.push(item);});
+        toImport.forEach(item=>{item.id=generateId();if(!item.tags)item.tags=[];item.notes=sanitizeRichText(item.notes);item.dispNotes=sanitizeRichText(item.dispNotes);db.firearms.push(item);});
         addAuditEntry('create', 'import', toImport.length + ' firearms', 'Bulk import');
         await saveData();render();toast(`Imported ${toImport.length} firearm(s) successfully.`);
       }
@@ -2353,6 +2857,237 @@ function handleImport(event){
 // =====================================================
 // EVENT LISTENERS
 // =====================================================
+function setupFirearmFormDisclosure() {
+  const grid = document.querySelector('#formModal .modal-body > .form-grid');
+  if (!grid || grid.dataset.disclosureReady) return;
+  grid.dataset.disclosureReady = 'true';
+  const wrap = (id, title, controlIds) => {
+    const nodes = controlIds.map(controlId => document.getElementById(controlId)?.closest('.form-group')).filter((node, i, all) => node && all.indexOf(node) === i);
+    if (!nodes.length) return;
+    const details = document.createElement('details');
+    details.id = id; details.className = 'form-disclosure full';
+    const summary = document.createElement('summary'); summary.textContent = title;
+    const inner = document.createElement('div'); inner.className = 'form-grid disclosure-grid';
+    details.append(summary, inner);
+    nodes[0].insertAdjacentElement('beforebegin', details);
+    nodes.forEach(node => inner.appendChild(node));
+  };
+  wrap('firearmNotesDisclosure', 'Notes and documents', ['fNotes', 'fReceiptInput', 'docInput']);
+  wrap('firearmAdvancedDisclosure', 'Maintenance and custom fields', ['fRoundCount', 'fWarrantyExp', 'customFieldsContainer']);
+}
+function syncFirearmDisclosure(firearm) {
+  const notes = document.querySelector('#firearmNotesDisclosure');
+  const advanced = document.querySelector('#firearmAdvancedDisclosure');
+  if (notes) notes.open = !!(firearm && (rteShow(firearm.notes) || firearm.receipt || (firearm.documents || []).length));
+  if (advanced) advanced.open = !!(firearm && ((firearm.roundCount || 0) > 0 || firearm.warrantyExp || (firearm.customFields || []).length));
+}
+setupFirearmFormDisclosure();
+
+const ModalAccessibility = (() => {
+  const selector = '.modal-overlay, .detail-overlay, #cmdk, #lightbox';
+  const closeActions = {
+    formModal: () => closeModal(), detailView: () => closeDetail(), ammoModal: () => closeAmmoModal(),
+    accessoryModal: () => closeAccessoryModal(), maintenanceModal: () => closeMaintenanceModal(),
+    backupModal: () => closeBackupModal(), cameraModal: () => closeCameraModal(),
+    settingsModal: () => closeSettingsModal(), passwordModal: () => closePasswordModal(),
+    wishlistModal: () => closeWishlistModal(), dealerModal: () => closeDealerModal(),
+    dealerImportModal: () => closeDealerImportModal(), cropModal: () => closeCropModal(),
+    qrModal: () => closeQRModal(), shortcutsModal: () => closeShortcutsModal(),
+    reportBuilderModal: () => closeReportBuilder(), remindersModal: () => closeReminders(),
+    shareModal: () => closeShareModal(), cmdk: () => closeCmdK(), lightbox: () => closeLightbox()
+  };
+  let stack = [];
+  let isolated = [];
+  const returnFocus = new WeakMap();
+
+  function isOpen(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.id === 'cmdk' || el.id === 'lightbox') return el.style.display !== 'none';
+    return el.classList.contains('open');
+  }
+  function init(el) {
+    if (!el || el.dataset.a11yDialog === 'true') return;
+    el.dataset.a11yDialog = 'true';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    const title = el.querySelector('h1, h2');
+    if (title) {
+      if (!title.id) title.id = (el.id || 'dialog') + '-title';
+      title.tabIndex = -1;
+      el.setAttribute('aria-labelledby', title.id);
+    } else if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', 'Dialog');
+    el.querySelectorAll('.modal-close, .detail-close, .lightbox-close').forEach(b => {
+      if (!b.getAttribute('aria-label')) b.setAttribute('aria-label', 'Close');
+    });
+  }
+  function restoreIsolation() {
+    isolated.forEach(({ el, inert, aria }) => {
+      if ('inert' in el) el.inert = inert;
+      if (aria == null) el.removeAttribute('aria-hidden'); else el.setAttribute('aria-hidden', aria);
+    });
+    isolated = [];
+  }
+  function isolateBehind(top) {
+    restoreIsolation();
+    if (!top) return;
+    let child = top;
+    while (child && child.parentElement) {
+      const parent = child.parentElement;
+      Array.from(parent.children).forEach(sibling => {
+        if (sibling === child || sibling.tagName === 'SCRIPT' || sibling.tagName === 'STYLE') return;
+        isolated.push({ el: sibling, inert: !!sibling.inert, aria: sibling.getAttribute('aria-hidden') });
+        if ('inert' in sibling) sibling.inert = true;
+        else sibling.setAttribute('aria-hidden', 'true');
+      });
+      child = parent;
+      if (parent === document.body) break;
+    }
+  }
+  function focusFirst(el) {
+    if (!el || el.classList.contains('app-dialog')) return;
+    const target = Array.from(el.querySelectorAll('[data-initial-focus], input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [contenteditable="true"], button:not([disabled]), [tabindex="0"]')).find(control => control.offsetParent !== null);
+    if (target) setTimeout(() => { if (isOpen(el)) target.focus(); }, 20);
+  }
+  function refresh() {
+    const candidates = Array.from(document.querySelectorAll(selector));
+    candidates.forEach(init);
+    const next = candidates.filter(isOpen);
+    next.forEach(el => {
+      if (!stack.includes(el)) {
+        returnFocus.set(el, document.activeElement instanceof HTMLElement ? document.activeElement : null);
+        el.dataset.dirty = 'false';
+        focusFirst(el);
+      }
+    });
+    stack.forEach(el => {
+      if (!next.includes(el)) {
+        el.dataset.dirty = 'false';
+        const opener = returnFocus.get(el);
+        if (opener && opener.isConnected) setTimeout(() => opener.focus(), 0);
+      }
+    });
+    stack = next;
+    isolateBehind(stack[stack.length - 1]);
+  }
+  let pending = false;
+  function scheduleRefresh() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; refresh(); });
+  }
+  async function requestClose(el) {
+    if (!el || el.classList.contains('app-dialog')) return;
+    if (el.dataset.dirty === 'true') {
+      const discard = await confirmDialog('Discard the changes you made in this dialog?', { title: 'Unsaved form changes', okText: 'Discard', danger: true });
+      if (!discard) { focusFirst(el); return; }
+    }
+    el.dataset.dirty = 'false';
+    const action = closeActions[el.id];
+    if (action) action();
+  }
+  document.addEventListener('input', e => {
+    const el = e.target.closest && e.target.closest(selector);
+    if (el && !el.classList.contains('app-dialog') && !e.target.matches('[data-no-dirty]')) el.dataset.dirty = 'true';
+  }, true);
+  document.addEventListener('change', e => {
+    const el = e.target.closest && e.target.closest(selector);
+    if (el && !el.classList.contains('app-dialog') && !e.target.matches('[data-no-dirty]')) el.dataset.dirty = 'true';
+  }, true);
+  document.addEventListener('click', e => {
+    const el = e.target.closest && e.target.closest(selector);
+    if (!el || el !== stack[stack.length - 1] || el.classList.contains('app-dialog')) return;
+    const button = e.target.closest('.modal-close, .detail-close, .lightbox-close, .modal-footer button');
+    const dismissButton = button && (/^(close|cancel)$/i.test(button.textContent.trim()) || button.matches('.modal-close, .detail-close, .lightbox-close'));
+    if ((e.target === el || dismissButton) && el.dataset.dirty === 'true') {
+      e.preventDefault(); e.stopImmediatePropagation(); requestClose(el);
+    }
+  }, true);
+  document.addEventListener('keydown', e => {
+    const top = stack[stack.length - 1];
+    if (!top) return;
+    if (e.key === 'Escape') {
+      if (top.classList.contains('app-dialog')) return;
+      e.preventDefault(); e.stopImmediatePropagation(); requestClose(top); return;
+    }
+    if (e.key !== 'Tab') return;
+    const focusable = Array.from(top.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])')).filter(el => el.offsetParent !== null);
+    if (!focusable.length) { e.preventDefault(); top.focus(); return; }
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }, true);
+  const observer = new MutationObserver(scheduleRefresh);
+  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'] });
+  refresh();
+  return { refresh, requestClose };
+})();
+
+function associateFormLabels(root) {
+  const scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll('.form-group > label:not([for])').forEach(label => {
+    const group = label.closest('.form-group');
+    const control = group && group.querySelector('input[id], select[id], textarea[id], [contenteditable][id]');
+    if (!control || label.contains(control)) return;
+    if (control.hasAttribute('contenteditable')) {
+      if (!label.id) label.id = control.id + '-label';
+      control.setAttribute('role', 'textbox'); control.setAttribute('aria-multiline', 'true'); control.setAttribute('aria-labelledby', label.id);
+    } else label.htmlFor = control.id;
+  });
+  scope.querySelectorAll('[contenteditable="true"][id]').forEach(el => {
+    el.setAttribute('role', 'textbox'); el.setAttribute('aria-multiline', 'true');
+    if (!el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')) el.setAttribute('aria-label', el.dataset.placeholder || 'Rich text');
+  });
+}
+
+function enhanceInteractiveContent(root) {
+  const scope = root && root.querySelectorAll ? root : document;
+  associateFormLabels(scope);
+  scope.querySelectorAll('.card[onclick], .card[data-vault-click], .ffl-card[onclick], .ffl-card[data-vault-click], .reminder-item[onclick], .reminder-item[data-vault-click], .dash-alert[onclick], .dash-alert[data-vault-click], .dash-highlight[onclick], .dash-highlight[data-vault-click], .backup-item[onclick], .backup-item[data-vault-click], tr[onclick], tr[data-vault-click], .detail-gallery-dot[onclick], .detail-gallery-dot[data-vault-click], .cmdk-item[onclick], .cmdk-item[data-vault-click]').forEach(el => {
+    if (el.matches('button, a, input, select, textarea')) return;
+    el.classList.add('keyboard-activatable'); el.setAttribute('role', 'button');
+    if (!el.hasAttribute('tabindex')) el.tabIndex = 0;
+  });
+  scope.querySelectorAll('th[onclick], th[data-vault-click]').forEach(th => {
+    th.classList.add('keyboard-activatable'); th.tabIndex = 0;
+    const sorted = (th.textContent || '').includes('▲') ? 'ascending' : (th.textContent || '').includes('▼') ? 'descending' : 'none';
+    th.setAttribute('aria-sort', sorted);
+  });
+  scope.querySelectorAll('.table-container').forEach(container => {
+    container.tabIndex = 0; container.setAttribute('role', 'region');
+    container.setAttribute('aria-label', 'Scrollable ' + (currentTab || 'inventory') + ' table');
+  });
+  scope.querySelectorAll('.card-checkbox:not([aria-label])').forEach(cb => cb.setAttribute('aria-label', 'Select item'));
+  scope.querySelectorAll('img.card-img, img.detail-img').forEach(img => {
+    if (img.hasAttribute('alt') && img.alt) return;
+    const card = img.closest('.card, .detail-panel');
+    const title = card && card.querySelector('.card-title, h2');
+    img.alt = title ? 'Photo of ' + title.textContent.trim() : 'Inventory item photo';
+  });
+  scope.querySelectorAll('img.thumb').forEach(img => { if (!img.hasAttribute('alt')) img.alt = ''; });
+  scope.querySelectorAll('.dash-card canvas').forEach(canvas => {
+    const card = canvas.closest('.dash-card'); const heading = card && card.querySelector('h2, h3');
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', (heading ? heading.textContent.trim() : 'Inventory') + ' chart. The surrounding dashboard contains the same summary data.');
+  });
+  scope.querySelectorAll('.img-upload-area[onclick], .img-upload-area[data-vault-click]').forEach(el => {
+    el.classList.add('keyboard-activatable'); el.setAttribute('role', 'button'); el.tabIndex = 0;
+  });
+  refreshSensitiveElements(scope);
+}
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const target = e.target.closest && e.target.closest('.keyboard-activatable');
+  if (!target || e.target.closest('button, a, input, select, textarea') && e.target !== target) return;
+  e.preventDefault(); target.click();
+});
+let enhancePending = false;
+new MutationObserver(() => {
+  if (enhancePending) return;
+  enhancePending = true;
+  requestAnimationFrame(() => { enhancePending = false; enhanceInteractiveContent(document); });
+}).observe(document.body, { subtree: true, childList: true });
+enhanceInteractiveContent(document);
+
 document.getElementById('formModal').addEventListener('click',e=>{if(e.target===document.getElementById('formModal'))closeModal();});
 document.getElementById('detailView').addEventListener('click',e=>{if(e.target===document.getElementById('detailView'))closeDetail();});
 document.getElementById('ammoModal').addEventListener('click',e=>{if(e.target===document.getElementById('ammoModal'))closeAmmoModal();});
@@ -2372,7 +3107,7 @@ document.getElementById('reportBuilderModal').addEventListener('click',e=>{if(e.
 
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
-    closeModal();closeDetail();closeAmmoModal();closeAccessoryModal();closeMaintenanceModal();closeBackupModal();closeCameraModal();closeSettingsModal();closePasswordModal();closeWishlistModal();closeDealerModal();closeDealerImportModal();closeCropModal();closeQRModal();closeShortcutsModal();closeReportBuilder();
+    // ModalAccessibility closes only the topmost layer and preserves focus.
     return;
   }
   // Alt+Key shortcuts
@@ -2468,7 +3203,7 @@ function closeWishlistModal() { document.getElementById('wishlistModal').classLi
 async function saveWishlistItem() {
   const make = document.getElementById('wMake').value.trim();
   const model = document.getElementById('wModel').value.trim();
-  if (!make && !model) { toast('Enter at least a Make or Model.'); return; }
+  if (!make && !model) { showFieldError(document.getElementById('wMake'), 'Enter at least a manufacturer or model.'); return; }
   const data = {
     id: editingWishlistId || generateId(), make, model,
     caliber: document.getElementById('wCaliber').value.trim(),
@@ -2589,9 +3324,8 @@ function closeDealerModal() { document.getElementById('dealerModal').classList.r
 
 async function saveDealer() {
   const name = document.getElementById('dName').value.trim();
-  if (!name) { toast('Enter a dealer name.'); return; }
-  let notes = document.getElementById('dNotes').innerHTML.trim();
-  if (notes === '<br>') notes = ''; // contenteditable leaves a stray <br> when emptied
+  if (!name) { showFieldError(document.getElementById('dName'), 'Enter a dealer name.'); return; }
+  const notes = rteValue('dNotes');
   const existing = editingDealerId ? db.dealers.find(x => x.id === editingDealerId) : null;
   const data = { id: editingDealerId || generateId(), name, ffl: document.getElementById('dFFL').value.trim(), phone: document.getElementById('dPhone').value.trim(), email: document.getElementById('dEmail').value.trim(), address: document.getElementById('dAddress').value.trim(), website: document.getElementById('dWebsite').value.trim(), notes, favorite: existing ? !!existing.favorite : false };
   if (editingDealerId) { const i = db.dealers.findIndex(x => x.id === editingDealerId); if (i > -1) db.dealers[i] = data; addAuditEntry('edit','dealer',name,''); }
@@ -2869,6 +3603,11 @@ function addCustomField(name, value) {
 
 function removeCustomField(idx) { tempCustomFields.splice(idx, 1); renderCustomFields(); }
 
+window.updateCustomFieldValue = function updateCustomFieldValue(index, field, value) {
+  if (!tempCustomFields[index] || !['name', 'value'].includes(field)) return;
+  tempCustomFields[index][field] = String(value == null ? '' : value);
+};
+
 function renderCustomFields() {
   const c = document.getElementById('customFieldsContainer');
   c.innerHTML = tempCustomFields.map((f, i) =>
@@ -2945,9 +3684,10 @@ async function applyCrop() {
 let currentQRFirearmId = null;
 let currentQRInstance = null;
 
-function generateQR(firearmId) {
+async function generateQR(firearmId) {
   const f = db.firearms.find(x => x.id === firearmId);
   if (!f) return;
+  if (!await ensureFeatureAsset('qr', 'QR code generation')) return;
   currentQRFirearmId = firearmId;
   const qrData = JSON.stringify({ id: f.id, make: f.make, model: f.model, serial: f.serial, caliber: f.caliber, type: f.type });
   const container = document.getElementById('qrContainer');
@@ -2991,8 +3731,24 @@ function printQR() {
   const dataUrl = getQRDataURL();
   if (!dataUrl) return;
   const f = db.firearms.find(x => x.id === currentQRFirearmId);
-  const w = window.open();
-  w.document.write('<html><head><title>QR Code</title></head><body style="text-align:center;padding:40px;font-family:sans-serif;"><h2>'+esc(f?(f.make||'')+' '+(f.model||''):'Firearm')+'</h2><p>Serial: '+esc(f?f.serial||'N/A':'')+'</p><img src="'+dataUrl+'" style="width:250px;height:250px;"><br><br><button onclick="window.print()">Print</button></body></html>');
+  const w = window.open('', '_blank', 'noopener=false');
+  if (!w) { toast('Allow pop-ups to print this QR code.', 'warning'); return; }
+  const doc = w.document;
+  doc.title = 'QR Code';
+  doc.body.replaceChildren();
+  doc.body.style.textAlign = 'center';
+  doc.body.style.padding = '40px';
+  doc.body.style.fontFamily = 'sans-serif';
+  const heading = doc.createElement('h2');
+  heading.textContent = f ? `${f.make || ''} ${f.model || ''}`.trim() || 'Firearm' : 'Firearm';
+  const serial = doc.createElement('p');
+  serial.textContent = `Serial: ${f ? f.serial || 'N/A' : 'N/A'}`;
+  const image = doc.createElement('img');
+  image.src = dataUrl; image.alt = 'Inventory QR code'; image.width = 250; image.height = 250;
+  const printButton = doc.createElement('button');
+  printButton.type = 'button'; printButton.textContent = 'Print';
+  printButton.addEventListener('click', () => w.print());
+  doc.body.append(heading, serial, image, doc.createElement('br'), doc.createElement('br'), printButton);
 }
 
 // =====================================================
@@ -3043,7 +3799,7 @@ function handleCSVImport(event) {
       }
       if (firearms.length === 0) { toast('No valid rows found.'); return; }
       if (await confirmDialog('Import ' + firearms.length + ' firearm(s) from CSV? This will ADD to your existing database.', { title: 'Import from CSV', okText: 'Import' })) {
-        firearms.forEach(f => db.firearms.push(f));
+        firearms.forEach(f => { f.notes = sanitizeRichText(f.notes); db.firearms.push(f); });
         addAuditEntry('create','import',firearms.length+' firearms','CSV import');
         await saveData(); render();
         toast('Imported ' + firearms.length + ' firearm(s) from CSV.');
@@ -3123,7 +3879,7 @@ function openReportBuilder() {
 
 function closeReportBuilder() { document.getElementById('reportBuilderModal').classList.remove('open'); }
 
-function generateCustomReport() {
+async function generateCustomReport() {
   const fields = [];
   document.querySelectorAll('#reportFieldList input[type="checkbox"]:checked').forEach(cb => {
     const f = REPORT_FIELDS.find(x => x.key === cb.dataset.field);
@@ -3136,6 +3892,8 @@ function generateCustomReport() {
   const includeAmmo = document.getElementById('rptAmmo').checked;
   const includeAcc = document.getElementById('rptAcc').checked;
   const includeDisposed = document.getElementById('rptDisposed').checked;
+
+  if (!await ensureFeatureAsset(format === 'excel' ? 'excel' : 'pdf', format === 'excel' ? 'Excel report export' : 'PDF report export')) return;
 
   let firearms = db.firearms.filter(f => !f.status || f.status === 'Active');
   if (includeDisposed) firearms = db.firearms;
@@ -3184,7 +3942,8 @@ function generateCustomReport() {
 // =====================================================
 // ATF BOUND BOOK EXPORT
 // =====================================================
-function exportATFBoundBook() {
+async function exportATFBoundBook() {
+  if (!await ensureFeatureAsset('pdf', 'Bound book PDF export')) return;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF('landscape');
   doc.setFontSize(14); doc.text('Acquisition & Disposition Record (Bound Book Format)', 14, 15);
@@ -3269,25 +4028,49 @@ function stateGet(key) {
 
 async function saveToLocalStorage() {
   hasUnsavedChanges = true;
+  let compatibilitySaved = false;
   try {
-    // Save full db (without backups) to IndexedDB - handles any size
+    // Keep the compatibility cache for the current account. CloudSync locks it
+    // to the authenticated uid and clears it on account changes/sign-out.
     const saveObj = Object.assign({}, db);
     delete saveObj.backups;
     await statePut('db', saveObj);
+    compatibilitySaved = true;
     console.log('Auto-saved to IndexedDB');
+    setSaveStatus((window.CloudSync && CloudSync.ready) ? 'saving' : 'local');
   } catch (e) {
     console.warn('IndexedDB state save failed:', e.message);
     toast('Could not save changes on this device. The app will still try the cloud save: ' + e.message, 'error', 8000);
   }
-  // A local cache error must not prevent the cloud autosave attempt.
-  if (window.CloudSync && CloudSync.ready) CloudSync.schedulePush();
+  // Persist a uid-scoped outbox immediately. Awaiting this is what guarantees
+  // that closing the page after an edit does not need a routine warning.
+  if (window.CloudSync && CloudSync.ready) {
+    const scheduled = CloudSync.schedulePush();
+    const queued = scheduled && scheduled.persisted ? await scheduled.persisted : await CloudSync._queuePromise;
+    if (queued && queued.ok) {
+      hasUnsavedChanges = false;
+      setSaveStatus(navigator.onLine ? 'saving' : 'local');
+      return true;
+    }
+    if (queued && queued.localSafe) {
+      hasUnsavedChanges = false;
+      setSaveStatus('local');
+      return true;
+    }
+  } else if (compatibilitySaved) {
+    // Local-only edition: the IndexedDB write is the durable destination.
+    hasUnsavedChanges = false;
+    setSaveStatus('local');
+    return true;
+  }
+  return false;
 }
 
 async function loadFromLocalStorage() {
   try {
     const data = await stateGet('db');
     if (!data) return false;
-    if (!data.firearms || data.firearms.length === 0) return false;
+    if (!Array.isArray(data.firearms) || !Array.isArray(data.ammo) || !Array.isArray(data.accessories)) return false;
     // Saved state takes priority over embedded data
     db.firearms = data.firearms;
     db.ammo = data.ammo || db.ammo;
@@ -3340,7 +4123,7 @@ function loadSortPreference() {
 window.addEventListener('beforeunload', (e) => {
   if (hasUnsavedChanges) {
     e.preventDefault();
-    e.returnValue = 'You have unsaved changes. Use "Backup Now" or "Save to File" to export your data before leaving.';
+    e.returnValue = 'Your latest change has not been saved on this device or in the cloud yet.';
     return e.returnValue;
   }
 });
@@ -3553,26 +4336,90 @@ function initDetailSwipe() {
   }, { passive: true });
 }
 
-// Manual backup - downloads a timestamped full backup file
-function manualBackup() {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const saveObj = Object.assign({}, db, { images: imagesDb });
-  const b = new Blob([JSON.stringify(saveObj, null, 2)], {type: 'application/json'});
-  const u = URL.createObjectURL(b);
-  const a = document.createElement('a');
-  a.href = u;
-  a.download = 'firearms_backup_' + timestamp + '.json';
-  a.click();
-  URL.revokeObjectURL(u);
+// Manual backup now opens the single Data & Backups surface. Routine autosave
+// remains silent; explicit recovery operations provide their own feedback.
+function manualBackup() { openBackupModal(); }
 
-  const el = document.getElementById('saveIndicator');
-  el.classList.add('show');
-  el.textContent = 'Backup saved ' + new Date().toLocaleTimeString();
-  setTimeout(() => el.classList.remove('show'), 3000);
-
-  addAuditEntry('create', 'system', 'Manual Backup', 'Downloaded backup file');
-  hasUnsavedChanges = false;
+function downloadBlobFile(value, filename, type) {
+  const blob = new Blob([value], { type: type || 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+async function downloadRecoveryBackup(encrypted) {
+  if (!window.VaultDataSafety || !window.CloudSync || !CloudSync.uid) {
+    toast('The recovery system is unavailable until you are signed in.', 'error');
+    return;
+  }
+  const password = document.getElementById('backupPassword').value;
+  const confirmPassword = document.getElementById('backupPasswordConfirm').value;
+  if (encrypted) {
+    if (password.length < 12) { toast('Use a backup password with at least 12 characters.', 'error'); return; }
+    if (password !== confirmPassword) { toast('Backup passwords do not match.', 'error'); return; }
+  } else {
+    const approved = await confirmDialog('Download this backup without password encryption? Anyone who gets the file can read its contents.', {
+      title: 'Unencrypted backup', okText: 'Download unencrypted', danger: true
+    });
+    if (!approved) return;
+  }
+
+  try {
+    const fullCopy = Object.assign({}, db, { images: imagesDb });
+    delete fullCopy.backups;
+    await VaultDataSafety.createBackup(CloudSync.uid, db, 'manual-download', { mediaCount: Object.keys(imagesDb || {}).length });
+    const envelope = await VaultDataSafety.exportEnvelope(CloudSync.uid, fullCopy, encrypted ? password : null);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadBlobFile(JSON.stringify(envelope, null, 2), 'firearms-vault-' + timestamp + (encrypted ? '.fvbackup' : '.json'));
+    document.getElementById('backupPassword').value = '';
+    document.getElementById('backupPasswordConfirm').value = '';
+    addAuditEntry('create', 'system', 'Full Recovery Backup', encrypted ? 'Downloaded encrypted recovery backup' : 'Downloaded unencrypted recovery backup');
+    await saveToLocalStorage();
+    setSaveStatus('saved', 'Backup downloaded and verified');
+    toast(encrypted ? 'Encrypted recovery backup downloaded.' : 'Unencrypted recovery backup downloaded.', 'success');
+    await openBackupModal();
+  } catch (error) {
+    toast('Backup failed: ' + error.message, 'error', 9000);
+  }
+}
+
+async function restoreDownloadedBackup() {
+  const input = document.getElementById('recoveryBackupFile');
+  const file = input.files && input.files[0];
+  if (!file) { toast('Choose a backup file first.', 'error'); return; }
+  if (!window.VaultDataSafety || !window.CloudSync) { toast('The recovery system is unavailable.', 'error'); return; }
+  try {
+    let parsed = JSON.parse(await file.text());
+    if (parsed && parsed.format === 'firearms-vault-backup') {
+      parsed = (await VaultDataSafety.importEnvelope(parsed, document.getElementById('backupPassword').value)).data;
+    } else if (window.VaultSecurity) {
+      parsed = VaultSecurity.normalizeDatabase(parsed, { regenerateInvalidIds: true, allowUnknownTopLevel: true }).data;
+    }
+    const approved = await confirmDialog('This verified backup will replace the current collection. A recovery point will be kept first.', {
+      title: 'Restore full backup', okText: 'Verify and restore', danger: true
+    });
+    if (!approved) return;
+
+    await VaultDataSafety.createBackup(CloudSync.uid, db, 'before-file-restore', { mediaCount: Object.keys(imagesDb || {}).length });
+    const normalizedFile = new File([JSON.stringify(parsed)], 'verified-backup.json', { type: 'application/json' });
+    const result = await CloudSync.restoreFromFile(normalizedFile);
+    input.value = '';
+    document.getElementById('backupPassword').value = '';
+    document.getElementById('backupPasswordConfirm').value = '';
+    closeBackupModal();
+    setSaveStatus(result.cloud && result.cloud.ok ? 'saved' : 'local', result.cloud && result.cloud.ok ? 'Backup restored and synced' : 'Backup restored on this device');
+    toast(result.cloud && result.cloud.ok ? 'Backup restored and synced.' : 'Backup restored locally; cloud sync will retry.', 'success', 8000);
+  } catch (error) {
+    toast('Restore failed: ' + error.message, 'error', 10000);
+  }
+}
+window.downloadRecoveryBackup = downloadRecoveryBackup;
+window.restoreDownloadedBackup = restoreDownloadedBackup;
 
 // Save all data to a JSON file on demand
 async function saveToFile() {
@@ -3636,13 +4483,15 @@ async function bootApp(){
     try { await CloudSync.pull(); }
     catch (e) { console.warn('Cloud pull failed; using local cache.', e); }
   }
+  normalizeRichTextData();
+  normalizeInternalIds();
 
   // Show all UI elements immediately - no file picker needed
   document.getElementById('statusDot').className = 'file-status-dot connected';
   document.getElementById('fileStatusText').textContent = 'Cloud synced';
   document.getElementById('fileStatusName').textContent = db.firearms.length + ' firearms loaded';
 
-  document.getElementById('backupBtn').style.display = db.backups.length > 0 ? 'inline-block' : 'none';
+  document.getElementById('backupBtn').style.display = 'inline-block';
   document.getElementById('settingsBtn').style.display = 'inline-block';
   document.getElementById('addFirearmBtn').style.display = 'inline-block';
   document.getElementById('addAmmoBtn').style.display = 'inline-block';
@@ -3663,6 +4512,7 @@ async function bootApp(){
   recordValueSnapshot();
   updateStats();
   render();
+  setPrivacyMode(privacyMode);
   buildThumbnails(); // background: speed up card/table rendering
   hasUnsavedChanges = false; // reset after initial load
 }

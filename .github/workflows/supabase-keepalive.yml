@@ -1,53 +1,24 @@
-name: Keep Supabase active
+name: Supabase health and privacy check
 
 on:
   schedule:
-    # Free Supabase projects may pause after seven days of low activity.
     - cron: '17 9 */3 * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   database-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
-      - name: Run an anonymous, RLS-protected database query
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-
-          const config = fs.readFileSync('js/config.js', 'utf8');
-          const url = config.match(/SUPABASE_URL\s*=\s*['"]([^'"]+)['"]/)?.[1];
-          const key = config.match(/SUPABASE_ANON_KEY\s*=\s*['"]([^'"]+)['"]/)?.[1];
-          if (!url || !key) throw new Error('Supabase public client configuration is missing.');
-
-          const response = await fetch(`${url}/rest/v1/collections?select=user_id&limit=1`, {
-            headers: { apikey: key, Authorization: `Bearer ${key}` }
-          });
-          if (!response.ok) throw new Error(`Supabase check failed with HTTP ${response.status}.`);
-
-          const rows = await response.json();
-          if (!Array.isArray(rows) || rows.length !== 0) {
-            throw new Error('Privacy check failed: anonymous collection rows were visible.');
-          }
-          console.log('Supabase is reachable and RLS is protecting the collection.');
-          NODE
-
-      - name: Keep GitHub's scheduled workflow enabled
-        run: |
-          if [ "$(date -u +%d)" -gt 3 ]; then
-            echo "Monthly workflow refresh is not due."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
-          git add .github/keepalive.txt
-          git commit -m "chore: refresh scheduled keepalive"
-          git push
+          node-version: '22'
+      - name: Verify reachability, anonymous privacy, and optional authenticated canary
+        env:
+          CANARY_EMAIL: ${{ secrets.SUPABASE_CANARY_EMAIL }}
+          CANARY_PASSWORD: ${{ secrets.SUPABASE_CANARY_PASSWORD }}
+        run: node scripts/check-supabase-health.mjs

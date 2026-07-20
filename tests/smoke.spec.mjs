@@ -67,9 +67,28 @@ test('cloud edits autosave without a conflict confirmation', async ({ page }) =>
   expect(source).toContain('Cloud save failed. Your changes are safe on this device');
 });
 
+test('an edit is marked unsafe before asynchronous saving and clears after a durable local commit', async ({ page }) => {
+  await page.goto('/index.html');
+  await expect(page.locator('#authForm')).toBeVisible({ timeout: 15000 });
+
+  const state = await page.evaluate(async () => {
+    await openStateDB();
+    CloudSync.ready = false;
+    hasUnsavedChanges = false;
+    const saving = saveData();
+    const unsafeWhileSaving = hasUnsavedChanges;
+    const saved = await saving;
+    return { unsafeWhileSaving, safeAfterCommit: !hasUnsavedChanges, saved };
+  });
+
+  expect(state.unsafeWhileSaving).toBe(true);
+  expect(state.safeAfterCommit).toBe(true);
+});
+
 // The standalone, sellable local-only build: no login, no Supabase, no network
 // sync — it must boot straight into the app on its own runtime (local-store.js).
-test('local edition boots with no login and no app-script errors', async ({ page }) => {
+const localEditionTest = process.env.TEST_SITE_DIR === 'dist' ? test.skip : test;
+localEditionTest('local edition boots with no login and no app-script errors', async ({ page }) => {
   const ownErrors = [];
   page.on('pageerror', (e) => {
     const s = (e && e.stack) || String(e);

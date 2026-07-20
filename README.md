@@ -1,95 +1,111 @@
 # Personal Firearms Vault
 
-A private, login-protected web app for firearms, ammunition, accessories, NFA
-items, maintenance, value history, documents, receipts, and insurance exports.
-The target deployment is `https://vault.st-dba.com/`.
+A private, login-protected application for inventory, ammunition, accessories,
+NFA records, maintenance, documents, receipts, reminders, sharing, and recovery.
+The production URL is `https://vault.st-dba.com/`.
 
 The application is a static PWA backed by Supabase Auth, Postgres, and private
-Storage. No inventory data belongs in this source tree or deployment package.
+Storage. Inventory, exports, credentials, and recovery files must never be
+committed to this repository or included in the deployment artifact.
 
-## Recovery status
+## Current status
 
-The original `AzJester/firearms-db` repository and its Supabase backend are no
-longer available. A complete source copy and valid June 17 backup were recovered
-from OneDrive. See `DEPLOYMENT.md` for the exact rebuild sequence.
+The application and its Supabase project are active. The hosted build is
+published from this repository through a test-gated GitHub Pages workflow.
+Open registration is disabled; access is limited to accounts created by the
+administrator.
 
-## Features
-
-- Firearms inventory with photos, condition, value, tags, and notes
-- NFA tracking, tax-stamp status, dates, and stamp PDFs
-- Ammunition, accessories, maintenance, and round-count tracking
-- Disposition records, wishlist, dealer directory, and audit trail
-- Dashboard charts and value history
-- Receipt/document storage and locally hosted OCR
-- Excel, PDF, CSV, JSON, bound-book, and insurance exports
-- Optional expiring, revocable read-only share links
-- Installable PWA with a local offline cache
+Version 2.1 adds the data-safety foundation: user-scoped durable local state,
+a persistent pending-change queue, revision-aware cloud synchronization,
+versioned recovery points, strict import/rich-text validation, quieter and more
+truthful save states, a smaller PWA shell, and expanded regression checks.
 
 ## Architecture
 
 ```text
-vault.st-dba.com (static, isolated origin)
-  ├─ login and application shell
-  ├─ self-hosted JavaScript, fonts, OCR model, and export libraries
-  └─ local IndexedDB cache
-               │ HTTPS, authenticated session
-               ▼
+vault.st-dba.com (isolated static origin)
+  ├─ authentication and application shell
+  ├─ user-scoped IndexedDB state, outbox, and recovery points
+  ├─ self-hosted feature libraries loaded on demand
+  └─ service worker with a small versioned core cache
+                    │ HTTPS + authenticated session
+                    ▼
 Supabase
-  ├─ Auth: intended user only
-  ├─ collections: one JSON document per user, protected by RLS
-  ├─ media: private bucket under <user-id>/, protected by RLS
-  └─ shares: revocable snapshots exposed only by unguessable token RPC
+  ├─ Auth: administrator-created users
+  ├─ collections: revisioned owner document, protected by RLS
+  ├─ collection_versions: owner-only recovery history
+  ├─ media: private owner paths, protected by RLS
+  ├─ shares: expiring/revocable snapshots exposed by random token RPC
+  └─ health_checks: isolated authenticated monitoring canary
 ```
 
-The dedicated subdomain keeps the vault's browser session and offline cache on
-a different origin from WordPress. This reduces the impact of a compromised
-WordPress plugin or page script.
+The dedicated subdomain is deliberate: WordPress scripts, plugins, and browser
+storage cannot access the vault origin.
+
+## Data-safety contract
+
+- A successful local save is considered durable even when Supabase is offline.
+- Pending changes stay in a user-specific outbox until the server accepts them.
+- Cloud writes use a revision precondition; a stale client cannot silently
+  replace a revision it did not load.
+- Non-overlapping changes are merged in the background. A user-facing alert is
+  reserved for a change that cannot be preserved automatically.
+- Account changes never hydrate another account's local collection.
+- Full recovery backups carry a format version and SHA-256 integrity check and
+  can optionally be encrypted with AES-256-GCM.
 
 ## Security controls
 
-- Row Level Security restricts database rows and files to `auth.uid()`.
-- The service-role key is never shipped to the browser.
-- Executable dependencies are self-hosted instead of loaded from public CDNs.
-- Deployment headers deny framing, MIME sniffing, indexing, and unnecessary
-  browser permissions; CSP limits network access to the app and Supabase.
-- Backups and inventory exports are excluded from source and deployment.
-- Share links expire when configured and can be revoked immediately.
-
-The local JSON backup is sensitive and currently unencrypted. Keep it in an
-encrypted drive or password-manager attachment and do not upload it to source
-control or the public WordPress media library.
-
-## Setup
-
-1. Create a new Supabase project.
-2. Run `supabase/schema.sql` in its SQL Editor.
-3. Disable open sign-ups and create only the intended user.
-4. Copy the new project URL and public anon key into `js/config.js` using
-   `js/config.example.js` as the template.
-5. Configure Supabase's Site URL and allowed redirect URL as
-   `https://vault.st-dba.com/`.
-6. Run the checks and build:
-
-```powershell
-npm install
-npm test
-npm run build
-```
-
-7. Upload the contents of `dist/` to the subdomain document root.
-8. Sign in and restore the recovered June 17 backup through the app.
-
-`npm run build` refuses to create a deployable directory while the retired
-Supabase project or placeholder credentials remain in `js/config.js`.
+- RLS restricts rows and private media to `auth.uid()`.
+- No service-role key is shipped to the browser.
+- Executable dependencies are self-hosted; optional large libraries load only
+  when their feature is used.
+- Rich text and imported records are sanitized and schema-normalized.
+- Share links are revocable and expire; sensitive fields are opt-in.
+- The deployed vendor and file integrity manifests include SHA-256 checksums.
+- Production should be served by a host/proxy that enforces `_headers` or
+  `.htaccess`. GitHub Pages does **not** apply either file as HTTP headers.
 
 ## Development
 
+Requires Node.js 22.
+
 ```powershell
-npm install
+npm ci
 npm test
-npx playwright test
 ```
 
-The Playwright configuration starts a local static server automatically. The
-source also includes a standalone `local-edition/` for offline-only use, but it
-is deliberately excluded from the hosted build.
+`npm test` syntax-checks both editions, validates static references, builds the
+exact deployment artifact, enforces the core payload budget, and runs Playwright
+against that artifact when `TEST_SITE_DIR=dist` is set by CI.
+
+The standalone `local-edition/` remains offline-only and is excluded from the
+hosted artifact.
+
+## Supabase configuration
+
+For a new environment:
+
+1. Create a Supabase project and run `supabase/schema.sql` in the SQL Editor.
+2. Disable open sign-ups, require confirmed email, and create intended accounts
+   administratively.
+3. Copy `js/config.example.js` to `js/config.js`; set only the project URL and
+   public anonymous key. Never use a secret or service-role key.
+4. Set the Auth Site URL to `https://vault.st-dba.com` and allow
+   `https://vault.st-dba.com/**` as a redirect.
+5. Enable TOTP MFA and enhanced MFA security. Set the minimum password length
+   to 12 and require the current password for normal password changes.
+6. Verify the RLS and migration tests before importing data.
+
+For the existing production environment, apply only migrations that have not
+already been applied. See `DEPLOYMENT.md`.
+
+## Monitoring
+
+The scheduled health workflow always verifies reachability and anonymous RLS.
+For a real write/delete canary, create a dedicated account and configure the
+repository secrets `SUPABASE_CANARY_EMAIL` and `SUPABASE_CANARY_PASSWORD`.
+The canary touches only `health_checks`, never inventory.
+
+Free-tier keepalive is best-effort. A paid Supabase plan is the appropriate
+choice when non-pausing availability and managed backup guarantees are required.

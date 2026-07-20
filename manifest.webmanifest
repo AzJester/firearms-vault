@@ -1,9 +1,10 @@
 {
-  "name": "Personal Firearms Database",
-  "short_name": "Firearms DB",
+  "name": "Personal Firearms Vault",
+  "short_name": "Vault",
   "description": "Private firearms, ammunition, accessory and NFA collection manager with cloud sync.",
   "start_url": "./",
   "scope": "./",
+  "id": "firearms-vault",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#1a3a5c",

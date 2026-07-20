@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Test and deploy to GitHub Pages
 
 on:
   push:
@@ -7,32 +7,71 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
+  quality-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Validate and build
+        run: npm run check:syntax && npm run validate && npm run build && npm run check:budget
+      - name: Test the exact deployment artifact
+        run: npm run test:e2e
+        env:
+          TEST_SITE_DIR: dist
+      - name: Test source-only local edition and database migration
+        run: npx playwright test --grep "local edition boots|Supabase migration defines|health monitoring"
+        env:
+          TEST_SITE_DIR: .
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: dist
+
   deploy:
+    needs: quality-and-build
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-      - run: npm ci
-      - run: npm run validate
-      - run: npm run build
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-      - name: Deploy to GitHub Pages
+      - name: Deploy tested artifact
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+  production-smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify production responds
+        run: |
+          set -euo pipefail
+          expected_revision="${GITHUB_SHA:0:12}"
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error --location --max-time 20 https://vault.st-dba.com/ >/dev/null \
+              && build_info="$(curl --fail --silent --show-error --location --max-time 20 https://vault.st-dba.com/build-info.json)"; then
+              if printf '%s' "$build_info" | grep --fixed-strings --quiet "\"revision\": \"$expected_revision\""; then
+                printf '%s\n' "$build_info"
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          exit 1

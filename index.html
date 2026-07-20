@@ -7,7 +7,7 @@
 <meta name="description" content="Personal firearms collection database with cloud sync.">
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
 <title>Personal Firearms Database</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -15,14 +15,7 @@
 <link rel="stylesheet" href="css/fonts.css">
 <link rel="stylesheet" href="css/styles.css">
 <!-- Self-hosted dependencies: no third-party script can read the private app origin. -->
-<script src="vendor/xlsx.full.min.js"></script>
-<script src="vendor/jspdf.umd.min.js"></script>
-<script src="vendor/jspdf.plugin.autotable.min.js"></script>
-<script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="vendor/qrcode.min.js"></script>
 <script src="vendor/supabase.js"></script>
-<script src="vendor/jszip.min.js"></script>
-<script src="vendor/chart.umd.js"></script>
 </head>
 <body>
 
@@ -37,9 +30,17 @@
       <input id="authEmail" type="email" inputmode="email" autocomplete="username" required placeholder="you@example.com">
       <label for="authPassword">Password</label>
       <input id="authPassword" type="password" autocomplete="current-password" required placeholder="Your password">
-      <div id="authError" class="auth-error" style="display:none;"></div>
+      <div id="authError" class="auth-error" role="alert" aria-live="assertive" style="display:none;"></div>
       <button id="authSubmit" type="submit" class="btn btn-primary auth-submit">Sign In</button>
       <button type="button" id="forgotBtn" class="auth-link">Forgot password?</button>
+    </form>
+    <form id="mfaChallengeForm" autocomplete="one-time-code" style="display:none;">
+      <p class="auth-sub">Enter the six-digit code from your authenticator app.</p>
+      <label for="mfaChallengeCode">Authentication code</label>
+      <input id="mfaChallengeCode" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+      <div id="mfaChallengeError" class="auth-error" role="alert" aria-live="assertive" style="display:none;"></div>
+      <button id="mfaChallengeSubmit" type="submit" class="btn btn-primary auth-submit">Verify and open vault</button>
+      <button type="button" id="mfaCancelBtn" class="auth-link">Use another account</button>
     </form>
     <p class="auth-foot">Your data is private and encrypted in transit. Only you can see it.</p>
   </div>
@@ -86,19 +87,36 @@
   </div>
 </div>
 
-<!-- Backup Restore Modal -->
+<!-- Data & Backups Modal -->
 <div class="modal-overlay" id="backupModal">
-  <div class="modal">
+  <div class="modal" style="max-width:720px;">
     <div class="modal-header">
-      <h2>Restore Backup</h2>
+      <h2>Data &amp; Backups</h2>
       <button class="modal-close" onclick="closeBackupModal()">&times;</button>
     </div>
     <div class="modal-body">
-      <p style="margin-bottom: 16px; color: var(--text2); font-size: 0.86rem;">Select a backup to restore. This will replace your current data.</p>
+      <h3 class="backup-section-title">Recovery points on this device</h3>
+      <p class="settings-help">Created after successful cloud saves. Restoring one replaces the current structured collection and immediately creates a pending sync.</p>
       <div class="backup-list" id="backupList"></div>
+      <hr class="backup-divider">
+      <h3 class="backup-section-title">Download a full recovery backup</h3>
+      <p class="settings-help">Includes every collection and locally available media, plus a SHA-256 integrity check. A password of at least 12 characters encrypts it with AES-256-GCM.</p>
+      <div class="form-grid backup-password-grid">
+        <div class="form-group"><label for="backupPassword">Backup password</label><input type="password" id="backupPassword" minlength="12" autocomplete="new-password"></div>
+        <div class="form-group"><label for="backupPasswordConfirm">Confirm password</label><input type="password" id="backupPasswordConfirm" minlength="12" autocomplete="new-password"></div>
+        <div class="form-group full backup-actions">
+          <button class="btn btn-primary" type="button" onclick="downloadRecoveryBackup(true)">Download encrypted backup</button>
+          <button class="btn btn-outline" type="button" onclick="downloadRecoveryBackup(false)">Download unencrypted JSON</button>
+        </div>
+      </div>
+      <hr class="backup-divider">
+      <h3 class="backup-section-title">Restore a downloaded backup</h3>
+      <p class="settings-help">Select an encrypted <code>.fvbackup</code> or full JSON backup. Enter its password above when required.</p>
+      <input type="file" id="recoveryBackupFile" accept=".fvbackup,.json,application/json" class="file-input-visible">
+      <button class="btn btn-danger" type="button" onclick="restoreDownloadedBackup()">Verify and restore file</button>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeBackupModal()">Cancel</button>
+      <button class="btn btn-outline" onclick="closeBackupModal()">Close</button>
     </div>
   </div>
 </div>
@@ -206,16 +224,27 @@
         <div class="form-group"><label>Label (optional)</label><input type="text" id="shareLabel" placeholder="e.g. Insurance — State Farm"></div>
         <div class="form-group"><label>Expires</label>
           <select id="shareExpiry">
-            <option value="7">In 7 days</option>
-            <option value="30" selected>In 30 days</option>
+            <option value="7" selected>In 7 days</option>
+            <option value="30">In 30 days</option>
             <option value="90">In 90 days</option>
             <option value="0">Never</option>
           </select>
         </div>
-        <div class="form-group full" style="display:flex;gap:18px;flex-wrap:wrap;">
-          <label style="display:flex;align-items:center;gap:7px;font-weight:500;cursor:pointer;"><input type="checkbox" id="sharePhotos" checked style="width:auto;"> Include photos</label>
-          <label style="display:flex;align-items:center;gap:7px;font-weight:500;cursor:pointer;"><input type="checkbox" id="shareSerials" checked style="width:auto;"> Include serial numbers</label>
+        <div class="form-group"><label for="shareCode">Optional passcode</label><input type="password" id="shareCode" minlength="12" maxlength="72" autocomplete="new-password" placeholder="At least 12 characters"></div>
+        <div class="form-group"><label for="shareMaxViews">Open limit</label>
+          <select id="shareMaxViews">
+            <option value="">Unlimited until expiry</option>
+            <option value="1">One open</option>
+            <option value="5">5 opens</option>
+            <option value="10">10 opens</option>
+            <option value="25">25 opens</option>
+          </select>
         </div>
+        <div class="form-group full" style="display:flex;gap:18px;flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:7px;font-weight:500;cursor:pointer;"><input type="checkbox" id="sharePhotos" style="width:auto;"> Include photos</label>
+          <label style="display:flex;align-items:center;gap:7px;font-weight:500;cursor:pointer;"><input type="checkbox" id="shareSerials" style="width:auto;"> Include serial numbers</label>
+        </div>
+        <p class="share-privacy-note form-group full" id="sharePrivacyNote">For privacy, photos and serial numbers are excluded unless you deliberately include them. Open limits count successful page loads, not unique people.</p>
         <div class="form-group full"><button class="btn btn-primary" id="createShareBtn" onclick="createShare()">Create share link</button></div>
       </div>
       <div id="shareResult" style="display:none;"></div>
@@ -232,7 +261,7 @@
 <div class="header">
   <div style="display:flex;align-items:center;gap:12px;">
     <h1>Personal Firearms Database</h1>
-    <span class="version-badge">v2.0 · Cloud</span>
+    <span class="version-badge">v2.1 · Cloud</span>
   </div>
   <div class="header-right">
     <div class="header-stats">
@@ -243,16 +272,14 @@
     </div>
     <button class="bell-btn" id="cmdkBtn" onclick="openCmdK()" title="Search / commands (Ctrl or &#8984; K)" aria-label="Search"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
     <button class="bell-btn" id="reminderBell" onclick="openReminders()" title="Reminders" aria-label="Reminders"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="bell-badge" id="reminderBadge" style="display:none;">0</span></button>
+    <button class="bell-btn" id="privacyToggle" type="button" title="Hide sensitive information" aria-label="Hide sensitive information" aria-pressed="false" onclick="togglePrivacyMode()"><span aria-hidden="true">&#128065;</span></button>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
     <div class="menu" id="acctMenu">
       <button class="theme-toggle" data-menu-toggle title="Menu" aria-label="Account menu" aria-haspopup="true"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
       <div class="menu-panel menu-panel-right">
         <button class="menu-item" onclick="CloudSync.syncNow()">&#128259; Sync now</button>
-        <button class="menu-item" onclick="manualBackup()">&#128190; Backup now</button>
-        <div class="menu-sep"></div>
-        <button class="menu-item" onclick="saveToFile()">&#11015;&#65039; Save to file</button>
-        <button class="menu-item" onclick="document.getElementById('restoreFile').click()">&#11014;&#65039; Restore from file</button>
-        <button class="menu-item" onclick="openBackupModal()">&#8617;&#65039; Restore in-app backup</button>
+        <button class="menu-item" onclick="openBackupModal()">&#128190; Data &amp; backups</button>
+        <button class="menu-item" onclick="openShareModal()">&#128279; Share inventory</button>
         <div class="menu-sep"></div>
         <button class="menu-item" onclick="openSettingsModal()">&#9881;&#65039; Settings</button>
         <button class="menu-item" onclick="Auth.signOut()">&#9099; Sign out</button>
@@ -271,10 +298,10 @@
     <span id="authedEmail" class="authed-email"></span>
   </div>
   <div class="file-status-right">
-    <span id="syncStatus" class="sync-pill" data-kind="">Connecting…</span>
-    <span class="save-indicator" id="saveIndicator" style="display:none;">Saved</span>
-    <button class="btn btn-small btn-primary" onclick="manualBackup()">Backup Now</button>
-    <button class="btn btn-small btn-file" id="backupBtn" onclick="openBackupModal()" style="display:none;">Restore Backup</button>
+    <span id="syncStatus" class="sync-pill save-status" data-kind="syncing" role="status" aria-live="polite" aria-atomic="true">Connecting&hellip;</span>
+    <span class="save-indicator" id="saveIndicator" aria-hidden="true">Saved</span>
+    <button class="btn btn-small btn-primary" onclick="openBackupModal()">Data &amp; Backups</button>
+    <button class="btn btn-small btn-file" id="backupBtn" onclick="openBackupModal()" style="display:none;">Recovery Points</button>
     <button class="btn btn-small btn-outline" id="settingsBtn" onclick="openSettingsModal()" style="display:none;">Settings</button>
     <button class="btn btn-small btn-secondary" onclick="saveToFile()">Save to File</button>
     <button class="btn btn-small btn-file" onclick="document.getElementById('restoreFile').click()" title="Replace your entire collection with a backup .json or .zip file">Restore from File</button>
@@ -287,20 +314,20 @@
 
 <!-- Tabs -->
 <div class="sticky-top">
-<div class="tabs">
-  <div class="tab" data-tab="dashboard">Dashboard</div>
-  <div class="tab active" data-tab="all">All Firearms</div>
-  <div class="tab" data-tab="ammo">Ammunition</div>
-  <div class="tab" data-tab="accessories">Accessories</div>
-  <div class="tab" data-tab="nfa">NFA Items</div>
-  <div class="tab" data-tab="disposed">Disposed</div>
-  <div class="tab" data-tab="wishlist">Wishlist</div>
-  <div class="tab" data-tab="dealers">FFL Dealers</div>
-</div>
+<nav class="tabs" role="tablist" aria-label="Inventory sections">
+  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="dashboard">Dashboard</button>
+  <button type="button" class="tab active" role="tab" aria-selected="true" tabindex="0" data-tab="all">All Firearms</button>
+  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="ammo">Ammunition</button>
+  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="accessories">Accessories</button>
+  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="nfa">NFA Items</button>
+  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="disposed">Disposed</button>
+  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="wishlist">Wishlist</button>
+  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="dealers">FFL Dealers</button>
+</nav>
 
 <!-- Toolbar -->
 <div class="toolbar" id="mainToolbar">
-  <input type="text" class="search-box" id="searchBox" placeholder="Search by make, model, serial, caliber, tag...">
+  <input type="search" class="search-box" id="searchBox" aria-label="Search inventory" placeholder="Search by make, model, serial, caliber, tag...">
   <select class="filter-select" id="filterType">
     <option value="">All Types</option>
     <option value="Rifle">Rifle</option>
@@ -325,7 +352,7 @@
     <option value="Fair">Fair</option>
     <option value="Poor">Poor</option>
   </select>
-  <select class="sort-select" id="cardSort" onchange="render()" style="display:none;">
+  <select class="sort-select" id="cardSort" onchange="render()" style="display:none;" aria-label="Sort inventory">
     <option value="">Sort by...</option>
     <option value="make-asc">Make A-Z</option>
     <option value="make-desc">Make Z-A</option>
@@ -429,12 +456,12 @@
 </div>
 
 <!-- Dashboard -->
-<div class="dashboard" id="dashboardContainer" style="display:none;"></div>
+<div class="dashboard" id="dashboardContainer" role="tabpanel" aria-label="Dashboard" style="display:none;"></div>
 
 <!-- Card Grid -->
-<div class="grid" id="cardGrid"></div>
+<div class="grid" id="cardGrid" role="tabpanel" aria-label="Inventory cards"></div>
 <!-- Table View -->
-<div class="table-container" id="tableContainer" style="display:none;"></div>
+<div class="table-container" id="tableContainer" role="tabpanel" aria-label="Inventory table" style="display:none;"></div>
 <!-- Empty State -->
 <div class="empty-state" id="emptyState" style="display:none;">
   <div class="icon">&#128737;</div>
@@ -958,33 +985,93 @@
           <p style="font-size:0.78rem;color:var(--text3);margin-bottom:10px;">Signed in as <strong id="settingsEmail"></strong></p>
         </div>
         <div class="form-group">
-          <label>New login password</label>
-          <input type="password" id="acctNewPassword" placeholder="At least 6 characters" autocomplete="new-password">
+          <label for="acctCurrentPassword">Current login password</label>
+          <input type="password" id="acctCurrentPassword" placeholder="Current password" autocomplete="current-password">
         </div>
         <div class="form-group">
-          <label>Confirm new password</label>
+          <label for="acctNewPassword">New login password</label>
+          <input type="password" id="acctNewPassword" placeholder="At least 12 characters" minlength="12" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+          <label for="acctConfirmPassword">Confirm new password</label>
           <input type="password" id="acctConfirmPassword" placeholder="Re-enter new password" autocomplete="new-password">
         </div>
         <div class="form-group full">
           <button class="btn btn-primary" onclick="changeCloudPassword()">Change Password</button>
         </div>
+        <div class="form-group full mfa-settings">
+          <h3>Two-step verification</h3>
+          <p id="mfaStatus" class="settings-help" role="status">Checking authenticator status&hellip;</p>
+          <div id="mfaFactorList" class="mfa-factor-list"></div>
+          <div class="mfa-actions">
+            <button type="button" class="btn btn-primary" id="mfaEnrollBtn" onclick="beginMfaEnrollment()" disabled>Set up authenticator</button>
+          </div>
+          <div id="mfaEnrollmentPanel" class="mfa-enrollment-panel" style="display:none;">
+            <p>Scan this code in your authenticator app, then enter its six-digit code to finish.</p>
+            <img id="mfaQrImage" alt="Authenticator enrollment QR code">
+            <p class="mfa-secret">Manual key: <code id="mfaSecret"></code></p>
+            <label for="mfaEnrollCode">Verification code</label>
+            <input id="mfaEnrollCode" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code">
+            <div class="mfa-actions">
+              <button type="button" class="btn btn-primary" onclick="verifyMfaEnrollment()">Enable two-step verification</button>
+              <button type="button" class="btn btn-outline" onclick="cancelMfaEnrollment()">Cancel setup</button>
+            </div>
+            <p class="settings-help">Finishing setup may sign out other sessions so they must complete the new second step.</p>
+          </div>
+        </div>
+        <div class="form-group full">
+          <button class="btn btn-danger" onclick="forgetThisDevice()">Sign out and forget this device</button>
+          <p class="settings-help">First confirms the latest copy is in the cloud, then removes this account's local collection, media cache, and pending changes from this browser.</p>
+        </div>
         <div class="form-group full"><hr style="border:none;border-top:1px solid var(--border-light);margin:6px 0;"></div>
         <div class="form-group full">
           <h3 style="color: var(--accent); font-size: 0.9rem; margin-bottom: 12px;">Local File Encryption</h3>
+          <p class="settings-help">This protects only a connected local export file. Cloud data, browser cache, and downloaded JSON backups are not end-to-end encrypted.</p>
         </div>
         <div class="form-group full">
           <label id="encryptionLabel">Set Password</label>
-          <input type="password" id="newPassword" placeholder="Enter new password">
+          <input type="password" id="newPassword" minlength="12" placeholder="At least 12 characters">
         </div>
         <div class="form-group full">
           <label>Confirm Password</label>
-          <input type="password" id="confirmPassword" placeholder="Confirm password">
+          <input type="password" id="confirmPassword" minlength="12" placeholder="Confirm password">
         </div>
         <div class="form-group full">
           <button class="btn btn-primary" onclick="setEncryption()" id="encryptionBtn">Enable Encryption</button>
         </div>
         <div id="decryptSection" style="grid-column: 1/-1; display: none;">
           <button class="btn btn-danger" onclick="removeEncryption()">Remove Encryption</button>
+        </div>
+        <div class="form-group full"><hr style="border:none;border-top:1px solid var(--border-light);margin:6px 0;"></div>
+        <div class="form-group full privacy-setting-row">
+          <div>
+            <label for="privacySetting">Privacy mode on this device</label>
+            <p class="settings-help">Mask serial numbers, prices, totals, and email addresses until you reveal them.</p>
+          </div>
+          <label class="toggle"><input type="checkbox" id="privacySetting" data-no-dirty onchange="setPrivacyMode(this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="form-group full data-quality-settings">
+          <h3>Data quality</h3>
+          <p class="settings-help">Find duplicate serials, invalid dates, inconsistent capitalization, extra whitespace, and duplicate tags. Safe cleanup never deletes or merges records.</p>
+          <div class="mfa-actions">
+            <button type="button" class="btn btn-outline" onclick="runDataQualityCheck()">Check collection</button>
+            <button type="button" class="btn btn-primary" id="applyDataQualityBtn" onclick="applyDataQualityCleanup()" style="display:none;">Apply safe cleanup</button>
+          </div>
+          <div id="dataQualityResult" class="data-quality-result" role="status"></div>
+        </div>
+        <div class="form-group full data-safety-panel">
+          <div class="data-safety-heading">
+            <div><h3>Data safety</h3><p class="settings-help">Local durability, pending changes, cloud revision, backup freshness, storage use, and running build.</p></div>
+            <div class="mfa-actions"><button type="button" class="btn btn-outline" onclick="runDataSafetyCheck()">Run safety check</button><button type="button" class="btn btn-outline" onclick="cleanUnusedMedia()">Clean unused media</button></div>
+          </div>
+          <dl class="data-safety-grid">
+            <div><dt>Cloud</dt><dd id="safetyCloud">Checking&hellip;</dd></div>
+            <div><dt>Pending changes</dt><dd id="safetyPending">Checking&hellip;</dd></div>
+            <div><dt>Last recovery point</dt><dd id="safetyBackup">Checking&hellip;</dd></div>
+            <div><dt>Device storage</dt><dd id="safetyStorage">Checking&hellip;</dd></div>
+            <div><dt>Build</dt><dd id="safetyBuild">Checking&hellip;</dd></div>
+          </dl>
+          <p id="safetyCheckResult" class="data-quality-result" role="status"></p>
         </div>
         <!-- Audit Trail Section -->
         <div class="form-group full" style="margin-top:20px;">
@@ -1004,7 +1091,7 @@
 </div>
 
 <!-- Detail View -->
-<div class="detail-overlay" id="detailView">
+<div class="detail-overlay" id="detailView" role="dialog" aria-modal="true" aria-label="Firearm details">
   <div class="detail-panel">
     <button class="detail-close" onclick="closeDetail()" aria-label="Close">&times;</button>
     <div class="detail-img-container" id="detailImgContainer"></div>
@@ -1060,63 +1147,14 @@
 
 <script src="js/config.js"></script>
 <script src="js/supabase-client.js"></script>
+<script src="js/security.js"></script>
+<script src="js/data-safety.js"></script>
+<script src="js/asset-loader.js"></script>
+<script src="js/data-quality.js"></script>
 <script src="js/app.js"></script>
 <script src="js/cloud-sync.js"></script>
 <script src="js/auth.js"></script>
-<script>
-  // Service worker registration + "new version available" prompt.
-  (function () {
-    if (!('serviceWorker' in navigator)) return;
-
-    function showUpdateBanner(worker) {
-      if (!worker || document.getElementById('updateBanner')) return;
-      var bar = document.createElement('div');
-      bar.id = 'updateBanner';
-      bar.className = 'update-banner';
-      var msg = document.createElement('span');
-      msg.textContent = 'A new version is available.';
-      var reload = document.createElement('button');
-      reload.type = 'button';
-      reload.className = 'update-banner-reload';
-      reload.textContent = 'Reload';
-      var dismiss = document.createElement('button');
-      dismiss.type = 'button';
-      dismiss.className = 'update-banner-x';
-      dismiss.setAttribute('aria-label', 'Dismiss');
-      dismiss.innerHTML = '&times;';
-      bar.appendChild(msg); bar.appendChild(reload); bar.appendChild(dismiss);
-      document.body.appendChild(bar);
-      reload.addEventListener('click', function () {
-        reload.textContent = 'Updating…'; reload.disabled = true;
-        updateClicked = true;
-        worker.postMessage('SKIP_WAITING');
-      });
-      dismiss.addEventListener('click', function () { bar.remove(); });
-    }
-
-    // Reload once the new worker takes control — but only when the user asked
-    // for it, so a first-install (clients.claim) never reloads unexpectedly.
-    var updateClicked = false, reloading = false;
-    navigator.serviceWorker.addEventListener('controllerchange', function () {
-      if (!updateClicked || reloading) return;
-      reloading = true; window.location.reload();
-    });
-
-    window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').then(function (reg) {
-        if (reg.waiting && navigator.serviceWorker.controller) showUpdateBanner(reg.waiting);
-        reg.addEventListener('updatefound', function () {
-          var nw = reg.installing;
-          if (!nw) return;
-          nw.addEventListener('statechange', function () {
-            if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdateBanner(nw);
-          });
-        });
-        // Surface freshly-deployed updates without a manual refresh.
-        document.addEventListener('visibilitychange', function () { if (!document.hidden) reg.update().catch(function () {}); });
-      }).catch(function (e) { console.warn('SW failed', e); });
-    });
-  })();
-</script>
+<script src="js/action-runtime.js"></script>
+<script src="js/pwa-register.js"></script>
 </body>
 </html>
