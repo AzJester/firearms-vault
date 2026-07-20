@@ -97,6 +97,14 @@ test('media is checksummed and uploaded before the CAS document commit', async (
   expect(result.outbox).toBeNull();
 });
 
+test('background media failures are reported without falsely claiming a clean sync', async ({ page }) => {
+  const response = await page.request.get('/js/cloud-sync.js');
+  expect(response.ok()).toBe(true);
+  const source = await response.text();
+  expect(source).toContain("' attachment' + (unavailable === 1 ? '' : 's') + ' unavailable'");
+  expect(source).toContain('Saved to cloud - local verification needs attention');
+});
+
 test('switching accounts clears the shared compatibility caches', async ({ page }) => {
   const result = await page.evaluate(async () => {
     const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

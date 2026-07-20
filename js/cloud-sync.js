@@ -927,11 +927,17 @@
         this.emit(mediaResult.ok ? 'media-hydrated' : 'degraded', { ok: mediaResult.ok, operation: 'media', media: mediaResult });
         if (!outbox) {
           const pendingNow = await this.storeGet('outbox', this.uid).catch(() => null);
-          if (!pendingNow) this.setStatus(
-            this.hasCloudData ? 'Synced' : 'Synced (empty)',
-            mediaResult.ok && cacheResult.ok ? 'ok' : 'error',
-            mediaResult.ok && cacheResult.ok ? 'saved' : 'degraded'
-          );
+          if (!pendingNow) {
+            const unavailable = Number((mediaResult.failures || []).length);
+            const statusText = unavailable
+              ? 'Synced - ' + unavailable + ' attachment' + (unavailable === 1 ? '' : 's') + ' unavailable'
+              : (this.hasCloudData ? 'Synced' : 'Synced (empty)');
+            this.setStatus(
+              statusText,
+              mediaResult.ok && cacheResult.ok ? 'ok' : 'error',
+              mediaResult.ok && cacheResult.ok ? 'saved' : 'degraded'
+            );
+          }
         }
         return mediaResult;
       });
@@ -1262,7 +1268,11 @@
         this.saveFailureNotified = false;
         clearTimeout(this._retryTimer);
         const postCommitOk = cleanup.ok && cacheResult.ok && safetyResult.ok && postCommitWarnings.length === 0;
-        this.setStatus('Synced', postCommitOk ? 'ok' : 'error', postCommitOk ? 'saved' : 'degraded');
+        this.setStatus(
+          postCommitOk ? 'Synced' : 'Saved to cloud - local verification needs attention',
+          postCommitOk ? 'ok' : 'error',
+          postCommitOk ? 'saved' : 'degraded'
+        );
         const result = {
           ok: true, status: postCommitOk ? 'synced' : 'synced-with-warnings',
           revision: this.revision, updatedAt: this.serverUpdatedAt,
