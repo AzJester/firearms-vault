@@ -98,10 +98,20 @@ test('media is checksummed and uploaded before the CAS document commit', async (
 });
 
 test('background media failures are reported without falsely claiming a clean sync', async ({ page }) => {
-  const response = await page.request.get('/js/cloud-sync.js');
-  expect(response.ok()).toBe(true);
-  const source = await response.text();
-  expect(source).toContain("' attachment' + (unavailable === 1 ? '' : 's') + ' unavailable'");
+  const result = await page.evaluate(() => {
+    CloudSync.hasCloudData = true;
+    return {
+      oneMissing: CloudSync.mediaStatusText({ failures: [{}] }),
+      twoMissing: CloudSync.mediaStatusText({ failures: [{}, {}] }),
+      clean: CloudSync.mediaStatusText({ failures: [] })
+    };
+  });
+  expect(result).toEqual({
+    oneMissing: 'Synced - 1 attachment unavailable',
+    twoMissing: 'Synced - 2 attachments unavailable',
+    clean: 'Synced'
+  });
+  const source = await (await page.request.get('/js/cloud-sync.js')).text();
   expect(source).toContain('Saved to cloud - local verification needs attention');
 });
 

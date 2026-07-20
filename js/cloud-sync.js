@@ -287,6 +287,14 @@
       }
     },
 
+    mediaStatusText(mediaResult) {
+      const unavailable = Number(((mediaResult && mediaResult.failures) || []).length);
+      if (unavailable) {
+        return 'Synced - ' + unavailable + ' attachment' + (unavailable === 1 ? '' : 's') + ' unavailable';
+      }
+      return this.hasCloudData ? 'Synced' : 'Synced (empty)';
+    },
+
     // ---- sync IndexedDB -------------------------------------------
     openSyncDb() {
       if (this._syncDbPromise) return this._syncDbPromise;
@@ -928,12 +936,8 @@
         if (!outbox) {
           const pendingNow = await this.storeGet('outbox', this.uid).catch(() => null);
           if (!pendingNow) {
-            const unavailable = Number((mediaResult.failures || []).length);
-            const statusText = unavailable
-              ? 'Synced - ' + unavailable + ' attachment' + (unavailable === 1 ? '' : 's') + ' unavailable'
-              : (this.hasCloudData ? 'Synced' : 'Synced (empty)');
             this.setStatus(
-              statusText,
+              this.mediaStatusText(mediaResult),
               mediaResult.ok && cacheResult.ok ? 'ok' : 'error',
               mediaResult.ok && cacheResult.ok ? 'saved' : 'degraded'
             );
@@ -954,7 +958,7 @@
 
       const fullyOk = mediaResult.ok && cacheResult.ok;
       this.setStatus(
-        mediaResult.pending ? 'Synced - loading media…' : (this.hasCloudData ? 'Synced' : 'Synced (empty)'),
+        mediaResult.pending ? 'Synced - loading media…' : this.mediaStatusText(mediaResult),
         fullyOk ? 'ok' : 'error', fullyOk ? 'saved' : 'degraded'
       );
       const result = {
