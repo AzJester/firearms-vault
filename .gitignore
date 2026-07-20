@@ -1,0 +1,24 @@
+# Never commit personal collection data to the public repo.
+# Your real data lives in Supabase, not here.
+*backup*
+*_database*.json
+firearms_full_backup.json
+*.json
+# ...but the project's own config files are NOT data and must be committed:
+!package.json
+!package-lock.json
+!manifest.webmanifest
+*.zip
+*.csv
+*.xlsx
+/data/
+/private/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+node_modules/
+dist/

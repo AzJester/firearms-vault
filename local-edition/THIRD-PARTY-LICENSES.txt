@@ -1,0 +1,35 @@
+THIRD-PARTY COMPONENTS
+
+Firearms Vault — Local Edition uses the following open-source libraries and
+font. Each is the property of its respective authors and is used under its own
+license. These notices must remain with the product.
+
+- Chart.js — charts. MIT License. https://www.chartjs.org/
+- SheetJS / xlsx (Community Edition) — Excel export. Apache License 2.0.
+  https://sheetjs.com/
+- jsPDF — PDF export. MIT License. https://github.com/parallax/jsPDF
+- jsPDF-AutoTable — PDF tables. MIT License.
+  https://github.com/simonbengtsson/jsPDF-AutoTable
+- Tesseract.js — optional serial-number OCR scanning. Apache License 2.0.
+  https://tesseract.projectnaptha.com/
+- qrcodejs — QR code generation. MIT License.
+  https://github.com/davidshimjs/qrcodejs
+- JSZip — reading/writing .zip files. Dual licensed MIT or GPLv3 (MIT used).
+  https://stuk.github.io/jszip/
+- Inter typeface — UI font. SIL Open Font License 1.1.
+  https://rsms.me/inter/
+
+The MIT, Apache-2.0, and SIL OFL licenses permit redistribution within a
+commercial product provided their copyright and permission notices are retained.
+
+BUNDLED FOR OFFLINE USE
+All of the above except Tesseract.js are bundled (vendored) in `vendor/` as the
+unmodified, redistributable library files, so the app runs without internet.
+Each library's own license text is included under `vendor/licenses/`.
+
+ONE EXCEPTION — Tesseract.js (optional serial-number OCR) is still loaded from a
+CDN, because it additionally downloads a worker, a WebAssembly core, and
+language data at runtime. The "Scan Serial" feature therefore needs an internet
+connection; every other feature works fully offline. To make OCR offline too,
+bundle tesseract.js, tesseract.js-core, and an `eng.traineddata` file and point
+the OCR initialization at those local paths.

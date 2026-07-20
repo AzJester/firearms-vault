@@ -1,0 +1,74 @@
+END USER LICENSE AGREEMENT (EULA)
+Firearms Vault — Local Edition
+
+IMPORTANT — READ CAREFULLY. This is a TEMPLATE provided to help you ship the
+product. It is NOT legal advice. Before you sell, have a lawyer review and
+adapt it, and replace every [BRACKETED] placeholder.
+
+Last updated: [DATE]
+Publisher: [YOUR BUSINESS NAME] ("we", "us")
+Contact: [SUPPORT EMAIL]
+
+1. LICENSE GRANT
+   Subject to this Agreement and payment in full, we grant you a personal,
+   non-exclusive, non-transferable, revocable license to install and use one
+   (1) copy of Firearms Vault — Local Edition (the "Software") on devices you
+   own or control, for your own personal record-keeping.
+
+2. RESTRICTIONS
+   You may not: (a) resell, sublicense, rent, lease, or redistribute the
+   Software or its source code; (b) publish it publicly or share your purchased
+   copy; (c) remove or alter any notices; or (d) use it to provide a paid
+   service to third parties. One purchase = one user/household unless a
+   multi-seat license is purchased.
+
+3. OWNERSHIP
+   The Software is licensed, not sold. We and our licensors retain all
+   intellectual-property rights. Third-party components are licensed under
+   their own terms (see THIRD-PARTY-LICENSES.txt).
+
+4. YOUR DATA
+   The Software stores all data locally on your device and transmits nothing to
+   us or any server (see PRIVACY.txt). You are solely responsible for your data,
+   including making and safeguarding backups. We cannot recover data that is
+   lost, corrupted, or deleted.
+
+5. NOT LEGAL OR COMPLIANCE ADVICE
+   The Software is a personal record-keeping convenience ONLY. It is not legal,
+   tax, regulatory, or compliance advice; it is not an official or legally
+   recognized record (including, without limitation, any ATF/FFL "bound book"
+   or acquisition-and-disposition record); and it does not ensure compliance
+   with any federal, state, local, or other law. You are solely responsible for
+   complying with all laws applicable to you, including the lawful possession,
+   transfer, storage, and recording of firearms, ammunition, and NFA items.
+   Verify any FFL or licensing information with the appropriate authority.
+
+6. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED
+   WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NON-INFRINGEMENT. WE DO NOT WARRANT THAT THE SOFTWARE WILL BE ERROR-FREE OR
+   UNINTERRUPTED.
+
+7. LIMITATION OF LIABILITY
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT WILL WE BE LIABLE FOR ANY
+   INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR ANY
+   LOSS OF DATA, PROFITS, OR GOODWILL, ARISING OUT OF OR RELATED TO YOUR USE OF
+   OR INABILITY TO USE THE SOFTWARE. OUR TOTAL AGGREGATE LIABILITY WILL NOT
+   EXCEED THE AMOUNT YOU PAID FOR THE SOFTWARE.
+
+8. TERMINATION
+   This license terminates automatically if you breach it. On termination you
+   must stop using and delete all copies of the Software.
+
+9. GOVERNING LAW
+   This Agreement is governed by the laws of [YOUR STATE/COUNTRY], without regard
+   to conflict-of-laws rules.
+
+10. ENTIRE AGREEMENT
+   This Agreement is the entire agreement between you and us regarding the
+   Software and supersedes any prior understandings.
+
+By installing or using the Software, you agree to this Agreement. If you do not
+agree, do not install or use the Software and request a refund per the
+marketplace's policy.

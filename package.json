@@ -1,0 +1,22 @@
+{
+  "name": "firearms-db",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal Firearms Database — cloud-synced static web app.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "validate": "node scripts/validate.mjs",
+    "test:e2e": "playwright test",
+    "test": "npm run validate && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.110.7",
+    "@tesseract.js-data/eng": "1.0.0",
+    "tesseract.js": "5.1.1",
+    "tesseract.js-core": "5.1.1"
+  }
+}

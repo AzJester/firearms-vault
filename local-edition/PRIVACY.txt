@@ -1,0 +1,45 @@
+PRIVACY POLICY
+Firearms Vault — Local Edition
+
+Last updated: [DATE]
+Publisher: [YOUR BUSINESS NAME]
+Contact: [SUPPORT EMAIL]
+
+SUMMARY
+This app is built to keep your information private. Everything you enter stays
+on your own device. We do not run a server for this app, we do not have an
+account system, and we never receive, see, store, or sell your data.
+
+WHAT WE COLLECT
+Nothing. The app has no analytics, no tracking, no telemetry, and no user
+accounts. We collect zero personal information through the app itself.
+
+WHERE YOUR DATA LIVES
+All of your records, photos, and documents are stored locally in your browser's
+on-device storage (IndexedDB) on the device where you use the app. Backups you
+create with "Save to File" or "Backup Now" are ordinary files saved wherever
+you choose; you control them entirely.
+
+THIRD-PARTY CODE LIBRARIES
+To work, the app loads some open-source code libraries (for charts, spreadsheet
+and PDF export, QR codes, and optional serial-number scanning). Depending on how
+your copy is installed, these may be requested from a public CDN the first time
+you open the app. Such a request is a normal web request to the library host and
+contains no data from your collection; it only fetches the library code. If your
+copy bundles these libraries locally, no such request is made. Your collection
+data is never sent anywhere.
+
+YOUR RESPONSIBILITY
+Because your data is stored only on your device, protecting and backing it up is
+up to you. Anyone with access to your unlocked device may be able to open the
+app. Use your device's security features, and consider the optional local file
+encryption in Settings for exported files.
+
+CHILDREN
+This app is intended for adults and is not directed to children.
+
+CHANGES
+If this policy changes, the updated version will ship with future releases.
+
+CONTACT
+Questions? Email [SUPPORT EMAIL].

@@ -1,0 +1,53 @@
+name: Keep Supabase active
+
+on:
+  schedule:
+    # Free Supabase projects may pause after seven days of low activity.
+    - cron: '17 9 */3 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  database-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run an anonymous, RLS-protected database query
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const config = fs.readFileSync('js/config.js', 'utf8');
+          const url = config.match(/SUPABASE_URL\s*=\s*['"]([^'"]+)['"]/)?.[1];
+          const key = config.match(/SUPABASE_ANON_KEY\s*=\s*['"]([^'"]+)['"]/)?.[1];
+          if (!url || !key) throw new Error('Supabase public client configuration is missing.');
+
+          const response = await fetch(`${url}/rest/v1/collections?select=user_id&limit=1`, {
+            headers: { apikey: key, Authorization: `Bearer ${key}` }
+          });
+          if (!response.ok) throw new Error(`Supabase check failed with HTTP ${response.status}.`);
+
+          const rows = await response.json();
+          if (!Array.isArray(rows) || rows.length !== 0) {
+            throw new Error('Privacy check failed: anonymous collection rows were visible.');
+          }
+          console.log('Supabase is reachable and RLS is protecting the collection.');
+          NODE
+
+      - name: Keep GitHub's scheduled workflow enabled
+        run: |
+          if [ "$(date -u +%d)" -gt 3 ]; then
+            echo "Monthly workflow refresh is not due."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
+          git add .github/keepalive.txt
+          git commit -m "chore: refresh scheduled keepalive"
+          git push

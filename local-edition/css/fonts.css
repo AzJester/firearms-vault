@@ -1,0 +1,9 @@
+/* Self-hosted Inter (variable, latin) for fully offline use.
+   SIL Open Font License 1.1 — see THIRD-PARTY-LICENSES.txt. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../vendor/fonts/InterVariable.woff2') format('woff2');
+}
