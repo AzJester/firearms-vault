@@ -20,6 +20,7 @@ const CloudSync = {
   pushTimer: null,
   pushing: false,
   pendingPush: false,
+  saveFailureNotified: false,
 
   // ---- status pill -------------------------------------------------
   setStatus(text, kind) {
@@ -223,22 +224,9 @@ const CloudSync = {
     this.setStatus('Saving…', 'syncing');
     const sb = window.sbClient;
     try {
-      // Conflict check: did another device change the cloud since we last synced?
-      try {
-        const { data: cur } = await sb.from('collections')
-          .select('updated_at').eq('user_id', this.uid).maybeSingle();
-        if (cur && this.serverUpdatedAt && cur.updated_at !== this.serverUpdatedAt) {
-          const overwrite = (typeof confirmDialog === 'function')
-            ? await confirmDialog('Your collection was changed on another device since this one loaded it. Overwrite the cloud with THIS device’s version? (Cancel keeps the other device’s version — reload this page to see it.)', { title: 'Sync conflict', okText: 'Overwrite cloud', cancelText: 'Keep other version', danger: true })
-            : confirm('Your collection was changed on another device since this one loaded it.\n\nOK = overwrite the cloud with THIS device’s version.\nCancel = keep the other device’s version (reload this page to see it).');
-          if (!overwrite) {
-            this.setStatus('Save paused — reload to sync', 'error');
-            this.pushing = false;
-            return;
-          }
-        }
-      } catch (e) { /* if the check fails, proceed with the save */ }
-
+      // Autosave uses last-edit-wins. A previous timestamp comparison could
+      // mistake Supabase's normalized timestamp for a change from another
+      // device and interrupt every save with a conflict confirmation.
       const ts = new Date().toISOString();
       const structured = this.buildStructured();
       const { error } = await sb.from('collections')
@@ -273,6 +261,7 @@ const CloudSync = {
 
       this.hasCloudData = (db.firearms.length || db.ammo.length || db.accessories.length) > 0;
       hasUnsavedChanges = false;
+      this.saveFailureNotified = false;
       this.setStatus('Synced', 'ok');
     } catch (e) {
       console.error('Cloud save failed', e);
@@ -284,6 +273,13 @@ const CloudSync = {
         this.setStatus('Save failed — will retry', 'error');
         clearTimeout(this._retryTimer);
         this._retryTimer = setTimeout(() => this.push(), 8000);
+      }
+      if (!this.saveFailureNotified && window.toast) {
+        const message = navigator.onLine === false
+          ? 'Cloud save paused while offline. Your changes are safe on this device and will upload automatically when you reconnect.'
+          : 'Cloud save failed. Your changes are safe on this device; the app will retry automatically.';
+        window.toast(message, 'error', 8000);
+        this.saveFailureNotified = true;
       }
     } finally {
       this.pushing = false;

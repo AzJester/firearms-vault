@@ -57,6 +57,16 @@ test('private build self-hosts executable dependencies', async ({ page }) => {
   }
 });
 
+test('cloud edits autosave without a conflict confirmation', async ({ page }) => {
+  const response = await page.request.get('/js/cloud-sync.js');
+  expect(response.ok()).toBeTruthy();
+  const source = await response.text();
+  expect(source).not.toContain('Sync conflict');
+  expect(source).not.toContain('Overwrite cloud');
+  expect(source).toContain('last-edit-wins');
+  expect(source).toContain('Cloud save failed. Your changes are safe on this device');
+});
+
 // The standalone, sellable local-only build: no login, no Supabase, no network
 // sync — it must boot straight into the app on its own runtime (local-store.js).
 test('local edition boots with no login and no app-script errors', async ({ page }) => {

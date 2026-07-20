@@ -3268,17 +3268,19 @@ function stateGet(key) {
 }
 
 async function saveToLocalStorage() {
+  hasUnsavedChanges = true;
   try {
     // Save full db (without backups) to IndexedDB - handles any size
     const saveObj = Object.assign({}, db);
     delete saveObj.backups;
     await statePut('db', saveObj);
-    if (window.CloudSync && CloudSync.ready) CloudSync.schedulePush();
-    hasUnsavedChanges = true;
     console.log('Auto-saved to IndexedDB');
   } catch (e) {
     console.warn('IndexedDB state save failed:', e.message);
+    toast('Could not save changes on this device. The app will still try the cloud save: ' + e.message, 'error', 8000);
   }
+  // A local cache error must not prevent the cloud autosave attempt.
+  if (window.CloudSync && CloudSync.ready) CloudSync.schedulePush();
 }
 
 async function loadFromLocalStorage() {
