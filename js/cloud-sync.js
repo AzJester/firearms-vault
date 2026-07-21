@@ -2677,8 +2677,10 @@
           }
         });
         if (!this.contextActive(account)) return this.staleResult('push');
-        const currentMemory = this.buildStructured();
-        if (equal(currentMemory, entry.data)) this.applyStructured(entry.data);
+        // A normal commit already matches the live structured state. Reapplying
+        // entry.data here would replace that richer live state with the
+        // media-stripped cloud payload, making resident documents, receipts,
+        // and tax stamps appear unavailable immediately after a successful save.
         if (mergedCommitReconciled && typeof render === 'function') {
           try { render(); } catch (_) {}
         }

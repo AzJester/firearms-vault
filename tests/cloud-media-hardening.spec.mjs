@@ -5,6 +5,76 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('#authForm')).toBeVisible({ timeout: 15000 });
 });
 
+test('successful cloud save keeps a reattached document available in the current session', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const uid = 'a0900000-0000-4000-8000-000000000009';
+    const dataURL = 'data:application/pdf;base64,JVBERi0xLjQKJXRlc3Q=';
+    await openImageDB();
+    await openStateDB();
+    await CloudSync.activateUser(uid);
+    await VaultDataSafety.clearState(uid);
+    await CloudSync.storeDelete('outbox', uid);
+    await CloudSync.storeDelete('cache', uid);
+    CloudSync.ready = true;
+    CloudSync.revision = 0;
+    CloudSync.serverUpdatedAt = null;
+    CloudSync.serverMediaManifest = {};
+    CloudSync._lastCommittedData = null;
+    CloudSync._casRpcSupported = true;
+    CloudSync.missingMedia = [];
+    db = {
+      version: 3, encrypted: false,
+      firearms: [{
+        id: 'document-firearm', make: 'Example', model: 'Suppressor', type: 'Silencer',
+        caliber: '9mm', images: [], tags: [], customFields: [], maintenanceLog: [],
+        documents: [{ id: 'submitted-pdf', name: 'Submitted.pdf', type: 'application/pdf', data: dataURL }]
+      }],
+      ammo: [], accessories: [], wishlist: [], dealers: [], settings: {}, auditTrail: [], valueHistory: []
+    };
+    imagesDb = {};
+    hasUnsavedChanges = true;
+    const calls = [];
+    window.sbClient = {
+      storage: { from: () => ({
+        async upload(path) { calls.push({ type: 'upload', path }); return { data: { path }, error: null }; },
+        async remove() { return { data: [], error: null }; }
+      }) },
+      async rpc(name, args) {
+        calls.push({ type: 'rpc', name });
+        return { data: {
+          status: 'saved', revision: 1, updated_at: '2026-07-21T00:00:00.000Z',
+          data: args.p_new_data, media_manifest: args.p_new_media_manifest
+        }, error: null };
+      }
+    };
+
+    const account = CloudSync.accountContext();
+    const generation = ++CloudSync._mutationGeneration;
+    const queued = await CloudSync.queueCurrentSnapshot('reattach-document', account, generation);
+    const pushed = await CloudSync.push({
+      capture: false, reason: 'reattach-document', queuePromise: Promise.resolve(queued)
+    }, account);
+    const scoped = await CloudSync.getScopedMedia(uid, 'doc:document-firearm:submitted-pdf');
+    openDetail('document-firearm');
+    const detail = document.getElementById('detailBody');
+    return {
+      queued, pushed, calls,
+      documentData: db.firearms[0].documents[0].data || null,
+      scopedData: scoped && scoped.dataURL,
+      viewButtons: [...detail.querySelectorAll('button')].map(button => button.textContent.trim()),
+      detailText: detail.textContent
+    };
+  });
+
+  expect(result.queued).toMatchObject({ ok: true, status: 'local-safe' });
+  expect(result.pushed).toMatchObject({ ok: true, status: 'synced' });
+  expect(result.calls.map(call => call.type)).toEqual(['upload', 'rpc']);
+  expect(result.scopedData).toBe('data:application/pdf;base64,JVBERi0xLjQKJXRlc3Q=');
+  expect(result.documentData).toBe(result.scopedData);
+  expect(result.viewButtons).toEqual(expect.arrayContaining(['View', 'Download']));
+  expect(result.detailText).not.toContain('syncing');
+});
+
 test('late account-A media hydration cannot apply or cache bytes under account B', async ({ page }) => {
   await page.evaluate(async () => {
     const userA = 'a1000000-0000-4000-8000-000000000001';

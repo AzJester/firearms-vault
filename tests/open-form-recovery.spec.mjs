@@ -506,6 +506,7 @@ test('forced SIGNED_OUT fails closed while a photo or document recovery read is 
   });
 
   await expect(page.locator('#authError')).toContainText('unfinished form could not be saved');
+  await expect.poll(() => page.evaluate(() => document.getElementById('formModal').dataset.dirty)).toBe('true');
   const result = await page.evaluate(async () => {
     const key = window.openFormRecoveryKey('attachment-owner');
     const stored = await CloudSync.storeGet('meta', key);
