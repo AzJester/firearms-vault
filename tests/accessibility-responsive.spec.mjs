@@ -129,15 +129,17 @@ test('inventory images fit inside their frames without crop or hover zoom', asyn
   }, 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22800%22 height=%22200%22/%3E');
   await expect(page.locator('.sv-img')).toHaveCSS('object-fit', 'contain');
 
-  await page.goto('/local-edition/index.html');
-  await page.evaluate(() => {
-    const fixture = document.createElement('div');
-    fixture.id = 'local-image-fit-fixture';
-    fixture.innerHTML = '<div class="card"><img class="card-img" alt="Test local item"></div><img class="dh-img" alt=""><table class="data-table"><tbody><tr><td><img class="thumb" alt=""></td></tr></tbody></table>';
-    document.body.appendChild(fixture);
-  });
-  for (const selector of ['.card-img', '.dh-img', '.data-table .thumb']) {
-    await expect(page.locator(`#local-image-fit-fixture ${selector}`)).toHaveCSS('object-fit', 'contain');
+  if (process.env.TEST_SITE_DIR !== 'dist') {
+    await page.goto('/local-edition/index.html');
+    await page.evaluate(() => {
+      const fixture = document.createElement('div');
+      fixture.id = 'local-image-fit-fixture';
+      fixture.innerHTML = '<div class="card"><img class="card-img" alt="Test local item"></div><img class="dh-img" alt=""><table class="data-table"><tbody><tr><td><img class="thumb" alt=""></td></tr></tbody></table>';
+      document.body.appendChild(fixture);
+    });
+    for (const selector of ['.card-img', '.dh-img', '.data-table .thumb']) {
+      await expect(page.locator(`#local-image-fit-fixture ${selector}`)).toHaveCSS('object-fit', 'contain');
+    }
   }
 });
 
