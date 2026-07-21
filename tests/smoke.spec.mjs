@@ -6,7 +6,7 @@ test('app boots and shows the login screen', async ({ page }) => {
   const ownErrors = [];
   page.on('pageerror', (e) => {
     const s = (e && e.stack) || String(e);
-    if (/\/js\/(app|auth|cloud-sync|supabase-client|config)\.js/.test(s)) ownErrors.push(s);
+    if (/\/js\/(app|auth|cloud-sync|supabase-client|config|security|data-safety|action-runtime|ui-shell|pwa-register)\.js/.test(s)) ownErrors.push(s);
   });
 
   await page.goto('/index.html');
@@ -21,13 +21,17 @@ test('app boots and shows the login screen', async ({ page }) => {
     CloudSync: typeof window.CloudSync,
     toast: typeof window.toast,
     openShareModal: typeof window.openShareModal,
-    changeCloudPassword: typeof window.changeCloudPassword
+    changeCloudPassword: typeof window.changeCloudPassword,
+    VaultUI: typeof window.VaultUI,
+    VaultActions: typeof window.VaultActions
   }));
   expect(globals.bootApp).toBe('function');
   expect(globals.CloudSync).toBe('object');
   expect(globals.toast).toBe('function');
   expect(globals.openShareModal).toBe('function');
   expect(globals.changeCloudPassword).toBe('function');
+  expect(globals.VaultUI).toBe('object');
+  expect(globals.VaultActions).toBe('object');
 
   expect(ownErrors, 'No runtime errors from app scripts:\n' + ownErrors.join('\n')).toHaveLength(0);
 });
@@ -64,7 +68,8 @@ test('cloud edits autosave without a conflict confirmation', async ({ page }) =>
   expect(source).not.toContain('Sync conflict');
   expect(source).not.toContain('Overwrite cloud');
   expect(source).toContain('last-edit-wins');
-  expect(source).toContain('Cloud save failed. Your changes are safe on this device');
+  expect(source).toContain('Cloud unavailable - safe on this device; retrying');
+  expect(source).not.toContain("window.toast('Cloud save failed. Your changes are safe on this device");
 });
 
 test('an edit is marked unsafe before asynchronous saving and clears after a durable local commit', async ({ page }) => {

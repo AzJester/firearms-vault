@@ -1,4 +1,4 @@
-# Personal Firearms Vault
+# Firearms Vault
 
 A private, login-protected application for inventory, ammunition, accessories,
 NFA records, maintenance, documents, receipts, reminders, sharing, and recovery.
@@ -102,10 +102,22 @@ already been applied. See `DEPLOYMENT.md`.
 
 ## Monitoring
 
-The scheduled health workflow always verifies reachability and anonymous RLS.
-For a real write/delete canary, create a dedicated account and configure the
-repository secrets `SUPABASE_CANARY_EMAIL` and `SUPABASE_CANARY_PASSWORD`.
-The canary touches only `health_checks`, never inventory.
+The daily scheduled health workflow always contacts Supabase and verifies anonymous
+privacy first, then runs in production mode and fails closed unless a dedicated
+canary account is configured with the repository secrets
+`SUPABASE_CANARY_EMAIL` and `SUPABASE_CANARY_PASSWORD`. It verifies Auth
+reachability, anonymous RLS, a database write/delete RPC, and a private
+Supabase Storage upload/download/checksum/delete cycle, including negative
+public-route and anonymous-session download checks. The temporary object is
+created under the canary user's `media` path, with cleanup attempted even when
+a later check fails. Neither canary reads nor writes inventory. A monthly
+activity-marker commit helps prevent GitHub from disabling the public
+repository's scheduled workflow after prolonged repository inactivity.
+
+`npm run check:supabase` remains a basic reachability/privacy check when run
+without credentials. Set `HEALTH_CHECK_MODE=production` to require the full
+authenticated canary. `npm run check:production` verifies the deployed build
+revision, content types, integrity-manifest hashes, and response headers.
 
 Free-tier keepalive is best-effort. A paid Supabase plan is the appropriate
 choice when non-pausing availability and managed backup guarantees are required.

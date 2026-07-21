@@ -107,12 +107,12 @@ test('background media failures are reported without falsely claiming a clean sy
     };
   });
   expect(result).toEqual({
-    oneMissing: 'Synced - 1 attachment unavailable',
-    twoMissing: 'Synced - 2 attachments unavailable',
-    clean: 'Synced'
+    oneMissing: 'Saved to cloud - 1 attachment needs recovery',
+    twoMissing: 'Saved to cloud - 2 attachments need recovery',
+    clean: 'Saved to cloud'
   });
   const source = await (await page.request.get('/js/cloud-sync.js')).text();
-  expect(source).toContain('Saved to cloud - local verification needs attention');
+  expect(source).toContain('Saved to cloud - device verification needs attention');
 });
 
 test('switching accounts clears the shared compatibility caches', async ({ page }) => {
@@ -161,7 +161,7 @@ sourceSchemaTest('health monitoring accepts either empty RLS results or explicit
   expect(response.ok()).toBe(true);
   const source = await response.text();
   expect(source).toContain('/auth/v1/settings');
-  expect(source).toContain('[401, 403].includes(anonymous.status)');
+  expect(source).toContain('[401, 403].includes(response.status)');
   expect(source).toContain('rows.length !== 0');
   expect(source).toContain('run_health_check_canary');
 });

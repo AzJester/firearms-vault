@@ -32,6 +32,7 @@ let currentPassword = null;
 let currentImageIndex = 0;
 let editingMaintenanceId = null;
 let editingAccessoryId = null;
+let pendingWishlistMoveId = null;
 let tempReceipts = { f: null, fName: null, a: null, aName: null, acc: null, accName: null };
 
 // IndexedDB for images
@@ -76,15 +77,42 @@ function setSaveStatus(state, detail) {
   const el = document.getElementById('syncStatus');
   if (!el) return;
   const labels = {
-    saving: 'Saving…', saved: 'Saved', local: 'Offline — saved on this device',
-    offline: 'Offline — saved on this device', failed: 'Save failed — retrying',
-    conflict: 'Save needs attention', degraded: 'Cloud unavailable — saved locally',
-    syncing: 'Syncing…'
+    saving: 'Saving changes…', saved: 'Saved to cloud',
+    local: 'Safe on this device — waiting for cloud',
+    offline: 'Offline — safe on this device',
+    failed: 'Changes not safe — keep this page open',
+    conflict: 'Sync needs review', degraded: 'Saved with a warning',
+    syncing: 'Checking cloud…'
   };
-  const kinds = { saving: 'syncing', syncing: 'syncing', saved: 'ok', local: 'local', offline: 'local', failed: 'error', conflict: 'error', degraded: 'error' };
+  const kinds = { saving: 'syncing', syncing: 'syncing', saved: 'ok', local: 'warning', offline: 'warning', failed: 'error', conflict: 'error', degraded: 'warning' };
+  const text = detail || labels[state] || 'Saved to cloud';
+  const actionable = state === 'conflict' || state === 'degraded' || state === 'failed' ||
+    !!(window.CloudSync && Array.isArray(CloudSync.missingMedia) && CloudSync.missingMedia.length);
   el.dataset.saveState = state || '';
   el.dataset.kind = kinds[state] || el.dataset.kind || '';
-  el.textContent = detail || labels[state] || 'Saved';
+  el.dataset.actionable = actionable ? 'true' : 'false';
+  el.textContent = text;
+  el.title = actionable ? text + '. Open sync details.' : 'Open sync details: ' + text;
+  el.setAttribute('aria-label', el.title);
+  const live = document.getElementById('syncStatusLive');
+  if (live) live.textContent = text;
+  if (window.CloudSync && CloudSync.uid) {
+    const dot = document.getElementById('statusDot');
+    const account = document.getElementById('fileStatusText');
+    if (state === 'local' || state === 'offline') {
+      if (dot) dot.className = 'file-status-dot local';
+      if (account) account.textContent = 'Using safe device copy';
+    } else if (state === 'failed') {
+      if (dot) dot.className = 'file-status-dot disconnected';
+      if (account) account.textContent = 'Cloud unavailable';
+    } else if (state === 'conflict' || state === 'degraded') {
+      if (dot) dot.className = 'file-status-dot local';
+      if (account) account.textContent = 'Cloud connected - needs attention';
+    } else {
+      if (dot) dot.className = 'file-status-dot connected';
+      if (account) account.textContent = 'Cloud account connected';
+    }
+  }
 }
 window.setSaveStatus = setSaveStatus;
 
@@ -110,13 +138,258 @@ async function ensureFeatureAsset(group, label) {
     return true;
   } catch (error) {
     const message = (label || 'This feature') + ' could not load. Check your connection and try again.';
-    setSaveStatus('failed', message);
     showPersistentFeatureError(message);
     toast(message, 'error', 10000);
     console.error('Optional feature load failed:', group, error);
     return false;
   }
 }
+
+// =====================================================
+// SYNC DETAILS + ATTACHMENT RECOVERY
+// =====================================================
+let pendingMissingMediaKey = null;
+
+function closeSyncCenter() {
+  const modal = document.getElementById('syncCenterModal');
+  if (modal) modal.classList.remove('open');
+}
+
+function syncRecordLabel(collectionName, id) {
+  const collections = {
+    firearms: db.firearms, ammo: db.ammo, accessories: db.accessories,
+    wishlist: db.wishlist, dealers: db.dealers
+  };
+  const record = (collections[collectionName] || []).find(item => String(item.id) === String(id));
+  if (!record) return 'A record';
+  return [record.make, record.model].filter(Boolean).join(' ').trim() || record.name || record.description || 'Untitled record';
+}
+
+function humanizeConflictPath(path) {
+  const value = String(path || '');
+  const match = /^(firearms|ammo|accessories|wishlist|dealers)\[([^\]]+)\](?:\.(.+))?$/.exec(value);
+  if (!match) return 'Collection data';
+  const field = (match[3] || 'record').split('.').pop().replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ');
+  return syncRecordLabel(match[1], match[2]) + ' - ' + field.charAt(0).toUpperCase() + field.slice(1);
+}
+
+function makeSyncIssue(title, description, className) {
+  const item = document.createElement('div');
+  item.className = 'sync-issue ' + (className || '');
+  const copy = document.createElement('div');
+  copy.className = 'sync-issue-copy';
+  const heading = document.createElement('strong'); heading.textContent = title;
+  const body = document.createElement('p'); body.textContent = description;
+  copy.append(heading, body); item.append(copy);
+  return item;
+}
+
+async function renderSyncCenter() {
+  const list = document.getElementById('syncIssueList');
+  const summary = document.getElementById('syncCenterSummary');
+  const current = document.getElementById('syncCenterCurrent');
+  const resolve = document.getElementById('syncConflictActions');
+  if (!list || !summary || !current || !resolve) return;
+
+  const sync = window.CloudSync;
+  const missing = sync && Array.isArray(sync.missingMedia) ? sync.missingMedia : [];
+  let pending = sync && sync.pendingConflict;
+  if (sync && sync.uid) {
+    const outbox = await sync.storeGet('outbox', sync.uid).catch(() => null);
+    if (outbox && Array.isArray(outbox.conflictPaths) && outbox.conflictPaths.length) {
+      pending = {
+        paths: outbox.conflictPaths,
+        at: outbox.conflictAt || outbox.queuedAt || null,
+        canResolve: !!outbox.conflictRemoteData
+      };
+      sync.pendingConflict = pending;
+    }
+  }
+  const conflicts = pending && Array.isArray(pending.paths) ? pending.paths : [];
+  const status = document.getElementById('syncStatus');
+  const state = status && status.dataset.saveState;
+  current.textContent = status ? status.textContent : 'Sync status is not available.';
+  current.dataset.state = state || '';
+
+  list.replaceChildren();
+  missing.forEach(detail => {
+    const title = detail.filename || detail.label || 'Unavailable attachment';
+    const description = (detail.recordName && detail.recordName !== 'Unknown record')
+      ? 'Attached to ' + detail.recordName + '. The record is saved, but this file is not available from cloud storage.'
+      : 'The record is saved, but this file is not available from cloud storage.';
+    const item = makeSyncIssue(title, description, 'missing-media');
+    const actions = document.createElement('div'); actions.className = 'sync-issue-actions';
+    const reattach = document.createElement('button'); reattach.type = 'button'; reattach.className = 'btn btn-small btn-primary'; reattach.textContent = 'Reattach file';
+    reattach.addEventListener('click', () => beginMissingMediaReattach(detail.key));
+    const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'btn btn-small btn-outline'; dismiss.textContent = 'Remove reference';
+    dismiss.addEventListener('click', () => dismissMissingMedia(detail.key));
+    actions.append(reattach, dismiss); item.append(actions); list.append(item);
+  });
+
+  conflicts.forEach(path => {
+    list.append(makeSyncIssue(
+      humanizeConflictPath(path),
+      'This device and another device changed the same field. Your device copy is safe; nothing will be overwritten automatically.',
+      'sync-conflict-item'
+    ));
+  });
+
+  const canResolve = !conflicts.length || !pending || pending.canResolve !== false;
+  resolve.style.display = conflicts.length && canResolve ? 'block' : 'none';
+  if (missing.length && conflicts.length) summary.textContent = 'Your records are safe, but some files need recovery and some fields need a choice.';
+  else if (missing.length) summary.textContent = missing.length + ' attachment' + (missing.length === 1 ? ' needs' : 's need') + ' recovery. Reattach the original file, or remove only its unavailable reference.';
+  else if (conflicts.length && canResolve) summary.textContent = 'Choose which version to use only for the fields listed below. Unrelated changes from both devices will be preserved.';
+  else if (conflicts.length) summary.textContent = 'Your device copy is safe. Try sync again once to refresh the comparison details, then return here to choose the listed fields.';
+  else if (state === 'failed') summary.textContent = 'The latest changes are not yet safe. Keep this page open and try saving again.';
+  else if (state === 'local' || state === 'offline') summary.textContent = 'Your latest changes are safe on this device and will upload automatically when cloud access returns.';
+  else summary.textContent = 'No sync problems need your attention.';
+
+  if (!missing.length && !conflicts.length) {
+    list.append(makeSyncIssue('Everything looks good', 'No missing attachments or overlapping edits were found.', 'sync-ok-item'));
+  }
+}
+
+async function openSyncCenter() {
+  const modal = document.getElementById('syncCenterModal');
+  if (!modal) return;
+  modal.classList.add('open');
+  await renderSyncCenter();
+}
+
+function beginMissingMediaReattach(key) {
+  if (!window.CloudSync) return;
+  const detail = CloudSync.describeMediaKey(key);
+  const input = document.getElementById('missingMediaFile');
+  if (!input) return;
+  pendingMissingMediaKey = String(key || '');
+  input.accept = detail.accept || 'application/pdf,image/*';
+  input.value = '';
+  input.click();
+}
+
+function readFileAsDataURL(file) {
+  return trackPendingVaultOperation(new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('The selected file could not be read.'));
+    reader.readAsDataURL(file);
+  }));
+}
+
+function applyRecoveredFilename(detail, file) {
+  const collections = {
+    firearm: db.firearms, ammo: db.ammo, accessory: db.accessories
+  };
+  const record = (collections[detail.recordKind] || []).find(item => String(item.id) === String(detail.recordId));
+  if (detail.type === 'receipt' && record) record.receiptName = file.name;
+  else if (detail.type === 'stamp' && record) record.stampPdfName = file.name;
+  else if (detail.type === 'document') {
+    const firearm = db.firearms.find(item => String(item.id) === String(detail.recordId));
+    const documentRecord = firearm && (firearm.documents || []).find(item => String(item.id) === String(detail.documentId));
+    if (documentRecord) { documentRecord.name = file.name; documentRecord.type = file.type; }
+  }
+}
+
+async function handleMissingMediaFile(event) {
+  const file = event.target.files && event.target.files[0];
+  const key = pendingMissingMediaKey;
+  event.target.value = '';
+  pendingMissingMediaKey = null;
+  if (!file || !key || !window.CloudSync) return;
+  const account = CloudSync.accountContext();
+  const detail = CloudSync.describeMediaKey(key);
+  const allowed = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+  if (!allowed.has(file.type) || (detail.type === 'stamp' && file.type !== 'application/pdf')) {
+    toast(detail.type === 'stamp' ? 'Choose a PDF for the tax stamp.' : 'Choose a PDF, JPEG, PNG, WebP, or GIF file.', 'error');
+    return;
+  }
+  if (file.size > 20 * 1024 * 1024) { toast('Choose a file smaller than 20 MB.', 'error'); return; }
+
+  try {
+    let dataURL = await readFileAsDataURL(file);
+    if (detail.type === 'photo') dataURL = await compressImage(dataURL, 1600, 0.82);
+    if (!CloudSync.contextActive(account)) return;
+    if (!CloudSync.applyMedia(key, dataURL)) throw new Error('The matching database record could not be found.');
+    applyRecoveredFilename(detail, file);
+    const metadata = await CloudSync.mediaMetadata(dataURL);
+    metadata.path = CloudSync.contentPath(key, metadata.sha256);
+    await CloudSync.putScopedMedia(CloudSync.uid, key, dataURL, metadata);
+    if (typeof idbPut === 'function') await idbPut(key, dataURL);
+    CloudSync.markMediaRecovered(key);
+    addAuditEntry('edit', detail.recordKind || 'attachment', detail.recordName || 'Attachment', 'Reattached ' + (detail.filename || file.name));
+    await saveData();
+    const result = await CloudSync.syncNow();
+    render();
+    await renderSyncCenter();
+    toast(result && result.ok ? 'Attachment restored and saved to cloud.' : 'Attachment restored on this device; cloud upload will retry.', result && result.ok ? 'success' : 'info', 7000);
+  } catch (error) {
+    toast('Could not reattach the file: ' + (error.message || error), 'error', 9000);
+  }
+}
+
+async function dismissMissingMedia(key) {
+  if (!window.CloudSync) return;
+  const detail = CloudSync.describeMediaKey(key);
+  const approved = await confirmDialog(
+    'Remove the unavailable "' + (detail.filename || 'attachment') + '" reference? The inventory record will stay, but this file entry cannot be restored unless you attach it again later.',
+    { title: 'Remove unavailable attachment', okText: 'Remove reference', danger: true }
+  );
+  if (!approved) return;
+  try {
+    const result = CloudSync.removeMediaReference(key);
+    if (!result.ok) throw new Error('The matching attachment reference could not be found.');
+    await CloudSync.storeDelete('media', CloudSync.mediaId(CloudSync.uid, key)).catch(() => {});
+    if (typeof idbDelete === 'function') await idbDelete(key).catch(() => {});
+    addAuditEntry('delete', detail.recordKind || 'attachment', detail.recordName || 'Attachment', 'Removed unavailable ' + (detail.filename || 'attachment') + ' reference');
+    await saveData();
+    const cloud = await CloudSync.syncNow();
+    render();
+    await renderSyncCenter();
+    toast(cloud && cloud.ok ? 'Unavailable attachment reference removed.' : 'Reference removed on this device; cloud sync will retry.', cloud && cloud.ok ? 'success' : 'info', 7000);
+  } catch (error) {
+    toast('Could not remove the attachment reference: ' + (error.message || error), 'error', 9000);
+  }
+}
+
+async function resolveSyncChanges(preference) {
+  if (!window.CloudSync) return;
+  const useCloud = preference === 'cloud';
+  const approved = await confirmDialog(
+    (useCloud ? 'Use the cloud version' : 'Use this device\'s version') + ' for the listed fields? Unrelated changes from both devices will still be preserved, and the selected result will be saved as a new revision.',
+    { title: 'Resolve overlapping edits', okText: useCloud ? 'Use cloud fields' : 'Use device fields', danger: false }
+  );
+  if (!approved) return;
+  try {
+    const result = await CloudSync.resolvePendingConflict(useCloud ? 'cloud' : 'device');
+    if (!result.ok) throw new Error(result.status === 'no-pending-conflict' ? 'Those changes were already resolved.' : 'The reviewed changes could not be saved.');
+    await renderSyncCenter();
+    toast('Reviewed changes saved.', 'success');
+  } catch (error) {
+    toast('Could not finish the review: ' + (error.message || error), 'error', 9000);
+    await renderSyncCenter();
+  }
+}
+
+async function retrySyncFromCenter() {
+  if (!window.CloudSync) return;
+  const result = (CloudSync.missingMedia || []).length && !CloudSync.pendingConflict
+    ? await CloudSync.pull({ awaitMedia: true })
+    : await CloudSync.syncNow();
+  await renderSyncCenter();
+  if (!result.ok && !result.localSafe) toast('The latest changes are not safe yet. Keep this page open and try again.', 'error', 9000);
+}
+
+function openBackupFromSyncCenter() {
+  closeSyncCenter();
+  return openBackupModal();
+}
+
+window.openSyncCenter = openSyncCenter;
+window.closeSyncCenter = closeSyncCenter;
+window.openBackupFromSyncCenter = openBackupFromSyncCenter;
+window.renderSyncCenter = renderSyncCenter;
+window.resolveSyncChanges = resolveSyncChanges;
+window.retrySyncFromCenter = retrySyncFromCenter;
 
 const PRIVACY_MODE_KEY = 'firearms_vault_privacy_mode';
 let privacyMode = false;
@@ -233,7 +506,8 @@ async function refreshDataSafetyPanel() {
     }
     if (navigator.storage && navigator.storage.estimate) {
       const estimate = await navigator.storage.estimate();
-      storage.textContent = formatStorageBytes(estimate.usage) + ' of ' + formatStorageBytes(estimate.quota);
+      const persistent = navigator.storage.persisted ? await navigator.storage.persisted() : false;
+      storage.textContent = formatStorageBytes(estimate.usage) + ' of ' + formatStorageBytes(estimate.quota) + (persistent ? ' · protected' : ' · browser managed');
     } else storage.textContent = 'Estimate unavailable';
     const response = await fetch('build-info.json', { cache: 'no-store' });
     if (response.ok) {
@@ -263,6 +537,20 @@ async function runDataSafetyCheck() {
     result.textContent = 'Safety check needs attention: ' + (error.message || error);
   }
 }
+async function requestPersistentStorage() {
+  const result = document.getElementById('safetyCheckResult');
+  try {
+    if (!navigator.storage || !navigator.storage.persist) throw new Error('This browser does not offer persistent site storage.');
+    const already = navigator.storage.persisted ? await navigator.storage.persisted() : false;
+    const granted = already || await navigator.storage.persist();
+    result.textContent = granted
+      ? 'Offline storage is protected from routine browser cleanup on this device.'
+      : 'The browser kept storage under its normal cleanup policy. Cloud sync and downloaded backups remain available.';
+    await refreshDataSafetyPanel();
+  } catch (error) {
+    result.textContent = 'Offline storage protection is unavailable: ' + (error.message || error);
+  }
+}
 async function cleanUnusedMedia() {
   const result = document.getElementById('safetyCheckResult');
   result.textContent = 'Checking retained recovery versions and media…';
@@ -284,6 +572,7 @@ async function cleanUnusedMedia() {
 }
 window.refreshDataSafetyPanel = refreshDataSafetyPanel;
 window.runDataSafetyCheck = runDataSafetyCheck;
+window.requestPersistentStorage = requestPersistentStorage;
 window.cleanUnusedMedia = cleanUnusedMedia;
 window.addEventListener('firearms-vault-sync-state', () => refreshDataSafetyPanel());
 
@@ -379,48 +668,77 @@ document.addEventListener('input', e => { if (e.target && e.target.matches('inpu
 // =====================================================
 // IMAGE LIGHTBOX
 // =====================================================
-function openLightbox(src) {
+function openLightbox(src, alt) {
   const lb = document.getElementById('lightbox');
   const img = document.getElementById('lightboxImg');
   if (!lb || !img || !src) return;
   img.src = src;
+  img.alt = alt || 'Full-size firearm photo';
   lb.style.display = 'flex';
 }
 function closeLightbox() {
   const lb = document.getElementById('lightbox');
-  if (lb) { lb.style.display = 'none'; const i = document.getElementById('lightboxImg'); if (i) i.src = ''; }
+  if (lb) {
+    lb.style.display = 'none';
+    const image = document.getElementById('lightboxImg');
+    if (image) { image.src = ''; image.alt = ''; }
+  }
 }
 window.openLightbox = openLightbox;
 window.closeLightbox = closeLightbox;
 // Click any detail-view photo to open it full-screen
 document.addEventListener('click', (e) => {
   const t = e.target;
-  if (t && t.classList && t.classList.contains('detail-img')) { e.stopPropagation(); openLightbox(t.src); }
+  if (t && t.classList && t.classList.contains('detail-img')) {
+    e.stopPropagation();
+    openLightbox(t.src, t.alt);
+  }
 });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
+document.addEventListener('keydown', (e) => {
+  const target = e.target;
+  if ((e.key === 'Enter' || e.key === ' ') && target && target.classList && target.classList.contains('detail-img')) {
+    e.preventDefault();
+    e.stopPropagation();
+    openLightbox(target.src, target.alt);
+    return;
+  }
+  if (e.key === 'Escape') closeLightbox();
+});
 
 // =====================================================
 // NAVIGATION: dropdown menus, contextual add, bottom nav, filters
 // =====================================================
 // Dropdown menus (Tools, account gear, bottom-nav "More")
+function closeOpenMenus({ restoreFocus = false } = {}) {
+  document.querySelectorAll('.menu.open').forEach(menu => {
+    menu.classList.remove('open');
+    const button = menu.querySelector('[data-menu-toggle]');
+    if (button) {
+      button.setAttribute('aria-expanded', 'false');
+      if (restoreFocus) button.focus();
+    }
+  });
+}
+document.querySelectorAll('[data-menu-toggle]').forEach(button => button.setAttribute('aria-expanded', 'false'));
 document.addEventListener('click', (e) => {
   const toggle = e.target.closest('[data-menu-toggle]');
   if (toggle) {
     const menu = toggle.closest('.menu');
     const wasOpen = menu.classList.contains('open');
-    document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+    closeOpenMenus();
     if (!wasOpen) menu.classList.add('open');
+    toggle.setAttribute('aria-expanded', wasOpen ? 'false' : 'true');
     e.stopPropagation();
     return;
   }
   if (e.target.closest('.menu-item')) {                 // run the item's action, then close
-    const m = e.target.closest('.menu'); if (m) m.classList.remove('open');
+    closeOpenMenus();
     return;
   }
-  document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+  closeOpenMenus();
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+  if (e.key === 'Escape') closeOpenMenus({ restoreFocus: true });
 });
 
 // Bottom-nav buttons (and "More" items) reuse the existing top-tab logic
@@ -431,8 +749,20 @@ document.addEventListener('click', (e) => {
   if (tab) tab.click();
 });
 function updateBottomNav() {
-  document.querySelectorAll('.bn-item[data-bottomtab]').forEach(b =>
-    b.classList.toggle('active', b.dataset.bottomtab === currentTab));
+  const moreTabs = ['accessories', 'nfa', 'disposed', 'wishlist', 'dealers'];
+  document.querySelectorAll('.bn-item[data-bottomtab], #bnMoreMenu .menu-item[data-bottomtab]').forEach(b => {
+    const active = b.dataset.bottomtab === currentTab;
+    b.classList.toggle('active', active);
+    if (active) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
+  const moreButton = document.querySelector('#bnMoreMenu [data-menu-toggle]');
+  if (moreButton) {
+    const active = moreTabs.includes(currentTab);
+    moreButton.classList.toggle('active', active);
+    if (active) moreButton.setAttribute('aria-current', 'page');
+    else moreButton.removeAttribute('aria-current');
+  }
 }
 function toggleFilters() {
   const tb = document.getElementById('mainToolbar');
@@ -444,9 +774,9 @@ let _ctxAdd = null;
 function updateContextualActions() {
   try {
     const map = {
-      all: ['+ Add Firearm', openAddModal], nfa: ['+ Add Firearm', openAddModal], disposed: ['+ Add Firearm', openAddModal],
-      ammo: ['+ Add Ammo', openAddAmmoModal], accessories: ['+ Add Accessory', openAccessoryModal],
-      wishlist: ['+ Add Wishlist', openWishlistModal], dealers: ['+ Add Dealer', openDealerModal]
+      all: ['Add firearm', openAddModal], nfa: ['Add NFA item', openAddNfaModal],
+      ammo: ['Add ammunition', openAddAmmoModal], accessories: ['Add accessory', openAccessoryModal],
+      wishlist: ['Add wishlist item', openWishlistModal], dealers: ['Add dealer', openDealerModal]
     };
     const spec = map[currentTab] || null;
     _ctxAdd = spec ? spec[1] : null;
@@ -459,6 +789,12 @@ function updateContextualActions() {
 function ctxAdd() { try { if (_ctxAdd) _ctxAdd(); } catch (err) { console.warn(err); } }
 window.ctxAdd = ctxAdd;
 window.toggleFilters = toggleFilters;
+
+function updatePageContext(count) {
+  if (window.VaultUI && typeof VaultUI.updateContext === 'function') {
+    VaultUI.updateContext(currentTab, Number.isFinite(count) ? { count } : undefined);
+  }
+}
 
 // Active-filter chips + filter count badge (chips shown on firearm views)
 function updateFilterChips() {
@@ -594,13 +930,13 @@ function openImageDB() {
 }
 
 function idbPut(key, value) {
-  return new Promise((resolve, reject) => {
+  return runCompatibilityWrite(() => new Promise((resolve, reject) => {
     const tx = imageStore.transaction(IDB_STORE, 'readwrite');
     const store = tx.objectStore(IDB_STORE);
     const req = store.put(value, key);
     req.onsuccess = () => resolve();
     req.onerror = (e) => reject(e);
-  });
+  }));
 }
 
 function idbGet(key) {
@@ -632,14 +968,132 @@ function idbGetAll() {
 }
 
 function idbDelete(key) {
-  return new Promise((resolve, reject) => {
+  return runCompatibilityWrite(() => new Promise((resolve, reject) => {
     const tx = imageStore.transaction(IDB_STORE, 'readwrite');
     const store = tx.objectStore(IDB_STORE);
     const req = store.delete(key);
     req.onsuccess = () => resolve();
     req.onerror = (e) => reject(e);
-  });
+  }));
 }
+
+function referencedFirearmImageIds() {
+  const ids = new Set();
+  (db.firearms || []).forEach(firearm => {
+    (Array.isArray(firearm.images) ? firearm.images : []).forEach(id => {
+      if (typeof id === 'string' && id) ids.add(id);
+    });
+  });
+  return ids;
+}
+
+function getReferencedFirearmImages() {
+  const images = {};
+  referencedFirearmImageIds().forEach(id => {
+    if (Object.prototype.hasOwnProperty.call(imagesDb || {}, id)) images[id] = imagesDb[id];
+  });
+  return images;
+}
+
+function referencedMediaKeysForExport() {
+  if (window.CloudSync && typeof CloudSync.referencedMediaKeys === 'function') {
+    return [...new Set(CloudSync.referencedMediaKeys(db).map(String).filter(Boolean))];
+  }
+  return [...referencedFirearmImageIds()].map(String);
+}
+
+function residentMediaBytes(key) {
+  let value = null;
+  if (window.CloudSync && typeof CloudSync.residentMedia === 'function') {
+    try { value = CloudSync.residentMedia(String(key)); } catch (_) {}
+  } else if (!String(key).includes(':')) value = imagesDb && imagesDb[key];
+  return typeof value === 'string' && value.startsWith('data:') ? value : null;
+}
+
+let mediaReadinessRetry = null;
+async function ensureReferencedMediaReady(options) {
+  const opts = Object.assign({ retry: true }, options || {});
+  const keys = [...new Set((opts.keys || referencedMediaKeysForExport()).map(String).filter(Boolean))];
+  const missingKeys = async () => {
+    let manifest = window.CloudSync && CloudSync.serverMediaManifest || {};
+    if (window.CloudSync && CloudSync.uid && typeof CloudSync.storeGet === 'function') {
+      const outbox = await CloudSync.storeGet('outbox', CloudSync.uid).catch(() => null);
+      if (outbox && outbox.mediaManifest) manifest = outbox.mediaManifest;
+    }
+    const unavailable = [];
+    for (const key of keys) {
+      const bytes = residentMediaBytes(key);
+      if (!bytes) { unavailable.push(key); continue; }
+      const expected = manifest && manifest[key];
+      if (expected && expected.sha256 && window.CloudSync && typeof CloudSync.mediaMetadata === 'function') {
+        const actual = await CloudSync.mediaMetadata(bytes).catch(() => null);
+        if (!actual || actual.sha256 !== expected.sha256) unavailable.push(key);
+      }
+    }
+    return unavailable;
+  };
+  let missing = await missingKeys();
+
+  // A normal cloud pull paints structured records first and intentionally
+  // hydrates their bytes in the background. Explicit export/share operations
+  // must join that work before deciding that an attachment is unavailable.
+  const hydration = window.CloudSync && CloudSync._mediaHydrationPromise;
+  if (missing.length && hydration && typeof hydration.then === 'function') {
+    try { await hydration; } catch (_) {}
+    missing = await missingKeys();
+  }
+
+  // A manual operation gets one fresh, fully-awaited pull in case the earlier
+  // background request was interrupted. Deduplicate concurrent button clicks.
+  if (missing.length && opts.retry && window.CloudSync && CloudSync.uid && typeof CloudSync.pull === 'function') {
+    if (!mediaReadinessRetry) {
+      mediaReadinessRetry = Promise.resolve()
+        .then(() => CloudSync.pull({ awaitMedia: true }))
+        .catch(() => null)
+        .finally(() => { mediaReadinessRetry = null; });
+    }
+    await mediaReadinessRetry;
+    missing = await missingKeys();
+  }
+
+  const details = missing.map(key => {
+    if (window.CloudSync && typeof CloudSync.describeMediaKey === 'function') {
+      try { return CloudSync.describeMediaKey(key); } catch (_) {}
+    }
+    return { key, filename: 'Attachment' };
+  });
+  return { ok: missing.length === 0, keys, missing, details };
+}
+
+let lastIncompleteMediaWarning = { signature: '', at: 0 };
+function warnIncompleteMedia(result, operation, options) {
+  const opts = options || {};
+  const count = result && result.missing ? result.missing.length : 0;
+  const signature = String(operation || '') + ':' + ((result && result.missing) || []).join('|');
+  const now = Date.now();
+  if (!opts.force && signature === lastIncompleteMediaWarning.signature && now - lastIncompleteMediaWarning.at < 15000) return;
+  lastIncompleteMediaWarning = { signature, at: now };
+  const label = count === 1 ? '1 referenced attachment is' : count + ' referenced attachments are';
+  toast((operation || 'This operation') + ' stopped because ' + label +
+    ' not available on this device. Open Sync & Recovery to retry or reattach the missing file' +
+    (count === 1 ? '.' : 's.'), 'error', 10000);
+}
+
+async function removeUnreferencedDraftImages(ids) {
+  const saved = referencedFirearmImageIds();
+  const candidates = [...new Set(Array.from(ids || []).filter(id => typeof id === 'string' && id))];
+  for (const id of candidates) {
+    if (saved.has(id)) continue;
+    delete imagesDb[id];
+    delete thumbCache[id];
+    if (imageStore) {
+      try { await idbDelete(id); } catch (error) { console.warn('Draft image cleanup failed:', id, error); }
+    }
+  }
+}
+
+window.getReferencedFirearmImages = getReferencedFirearmImages;
+window.ensureReferencedMediaReady = ensureReferencedMediaReady;
 
 // Migrate images from JSON to IndexedDB
 async function migrateImagesToIDB(jsonImages) {
@@ -732,7 +1186,14 @@ function renderTagsInput() {
   tempTags.forEach((tag, idx) => {
     const chip = document.createElement('span');
     chip.className = 'tag-chip';
-    chip.innerHTML = esc(tag) + ' <span class="tag-remove" onclick="removeTag(' + idx + ')">&times;</span>';
+    chip.append(document.createTextNode(tag + ' '));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'tag-remove';
+    remove.setAttribute('aria-label', 'Remove tag ' + tag);
+    remove.textContent = '×';
+    remove.addEventListener('click', event => { event.stopPropagation(); removeTag(idx); });
+    chip.appendChild(remove);
     container.insertBefore(chip, input);
   });
 }
@@ -744,18 +1205,21 @@ function handleTagKey(e) {
     if (val && !tempTags.includes(val)) {
       tempTags.push(val);
       renderTagsInput();
+      saveFirearmDraftSoon();
     }
     e.target.value = '';
     hideTagSuggestions();
   } else if (e.key === 'Backspace' && e.target.value === '' && tempTags.length > 0) {
     tempTags.pop();
     renderTagsInput();
+    saveFirearmDraftSoon();
   }
 }
 
 function removeTag(idx) {
   tempTags.splice(idx, 1);
   renderTagsInput();
+  saveFirearmDraftSoon();
 }
 
 function showTagSuggestions() {
@@ -783,6 +1247,7 @@ function selectTagSuggestion(tag) {
   if (!tempTags.includes(tag)) {
     tempTags.push(tag);
     renderTagsInput();
+    saveFirearmDraftSoon();
   }
   document.getElementById('tagInput').value = '';
   hideTagSuggestions();
@@ -894,10 +1359,20 @@ async function readFromDisk() {
   }
 }
 
-async function writeToDisk() {
+async function writeToDisk(options) {
   if (!fileHandle) return;
+  const opts = options || {};
   try {
-    let saveObj = Object.assign({}, db, { images: imagesDb });
+    const readiness = opts.readiness || await ensureReferencedMediaReady({ retry: !!opts.manual });
+    if (!readiness.ok) {
+      warnIncompleteMedia(
+        readiness,
+        opts.manual ? 'File export' : 'The connected file was not overwritten',
+        { force: !!opts.manual }
+      );
+      return false;
+    }
+    let saveObj = Object.assign({}, db, { images: getReferencedFirearmImages() });
     let toWrite = saveObj;
     if (db.encrypted && currentPassword) {
       toWrite = await encryptData(JSON.stringify(saveObj), currentPassword);
@@ -906,10 +1381,12 @@ async function writeToDisk() {
     await writable.write(JSON.stringify(toWrite, null, 2));
     await writable.close();
     showSaveIndicator();
+    return true;
   } catch (e) {
     console.error('Write failed:', e);
     toast('Failed to save to disk: ' + e.message);
     disconnectFile();
+    return false;
   }
 }
 
@@ -966,9 +1443,80 @@ async function saveData() {
   hasUnsavedChanges = true;
   setSaveStatus('saving');
   await writeToDisk();
-  await saveToLocalStorage();
+  let persisted = false;
+  try { persisted = await saveToLocalStorage(); }
+  catch (error) { console.warn('Durable save failed:', error); }
   updateStats();
+  if (!persisted) setSaveStatus('failed', 'Not saved - keep this page open');
+  return persisted;
 }
+
+async function keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, modalId, label) {
+  const safeToRollbackWholeSnapshot = !attemptedDatabase || editValuesEqual(db, attemptedDatabase);
+  if (safeToRollbackWholeSnapshot) {
+    db = previousDatabase;
+    hasUnsavedChanges = false;
+  }
+  const modal = document.getElementById(modalId);
+  if (modal) modal.dataset.dirty = 'true';
+  if (safeToRollbackWholeSnapshot) {
+    try {
+      const safeCopy = Object.assign({}, db);
+      delete safeCopy.backups;
+      await statePut('db', safeCopy);
+    } catch (error) { console.warn('Previous device snapshot could not be restored after the failed form save:', error); }
+  } else {
+    console.warn('A newer database mutation arrived while this save was pending; the newer state was preserved instead of applying a whole-database rollback.');
+  }
+  render();
+  setSaveStatus('failed', (label || 'Changes') + ' not saved');
+  toast((label || 'Changes') + ' could not be confirmed as saved, so the form was kept open. Keep this page open and retry.', 'error', 9000);
+}
+
+const activeFormSaves = new Set();
+let activeFormSavePromise = null;
+async function withFormSaveLock(key, buttonId, operation) {
+  if (activeFormSaves.size > 0) {
+    toast('Another save is still finishing. Wait a moment, then try again.', 'warning', 5000);
+    return false;
+  }
+  activeFormSaves.add(key);
+  const button = buttonId && document.getElementById(buttonId);
+  const modal = button && button.closest('.modal-overlay');
+  const previousDisabled = button && button.disabled;
+  const previousText = button && button.textContent;
+  if (modal) modal.dataset.saving = 'true';
+  if (button) { button.disabled = true; button.textContent = 'Saving...'; }
+  const execution = Promise.resolve().then(operation);
+  activeFormSavePromise = execution;
+  try { return await execution; }
+  finally {
+    if (activeFormSavePromise === execution) activeFormSavePromise = null;
+    activeFormSaves.delete(key);
+    if (modal && modal.isConnected) modal.dataset.saving = 'false';
+    if (button && button.isConnected) {
+      button.disabled = !!previousDisabled;
+      button.textContent = previousText;
+    }
+  }
+}
+
+window.waitForActiveFormSave = async function waitForActiveFormSave(timeoutMs) {
+  const pending = activeFormSavePromise;
+  if (!pending) return { ok: true, active: false };
+  const timeout = Math.max(1000, Number(timeoutMs) || 12000);
+  let timeoutId;
+  const timedOut = new Promise(resolve => {
+    timeoutId = setTimeout(() => resolve({ ok: false, active: true, status: 'timeout' }), timeout);
+  });
+  const settled = pending.then(
+    result => ({ ok: true, active: true, result }),
+    error => ({ ok: true, active: true, result: false, error: String(error && error.message || error || '') })
+  );
+  const outcome = await Promise.race([settled, timedOut]);
+  clearTimeout(timeoutId);
+  return outcome;
+};
 
 // =====================================================
 // ENCRYPTION
@@ -1087,12 +1635,20 @@ async function openBackupModal() {
   list.innerHTML = '<p class="backup-empty" role="status">Loading recovery points&hellip;</p>';
   document.getElementById('backupModal').classList.add('open');
   durableBackupList = [];
+  let readError = null;
   try {
     if (window.VaultDataSafety && window.CloudSync && CloudSync.uid) {
       durableBackupList = await VaultDataSafety.listBackups(CloudSync.uid);
     }
   } catch (error) {
     console.warn('Could not read recovery points:', error);
+    readError = error;
+  }
+  if (readError) {
+    list.innerHTML = '<div class="backup-empty backup-read-error" role="alert"><strong>Recovery points could not be read.</strong><br>' +
+      '<span>Your current collection has not been changed. Check this device\'s storage access, then try again.</span>' +
+      '<div class="backup-actions"><button type="button" class="btn btn-outline" onclick="openBackupModal()">Retry</button></div></div>';
+    return;
   }
   if (!durableBackupList.length) {
     list.innerHTML = '<p class="backup-empty" role="status">No recovery points yet. They are created after successful cloud saves; you can download a full backup below at any time.</p>';
@@ -1198,9 +1754,9 @@ function openReminders() {
     list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text3);font-size:0.86rem;">&#127881; All clear — no reminders right now.</div>';
   } else {
     list.innerHTML = rem.map(r =>
-      `<div class="reminder-item sev-${r.sev}" onclick="reminderGo('${r.itemType}','${r.itemId}')">
+      `<button type="button" class="reminder-item sev-${r.sev}" style="width:100%;background:transparent;color:inherit;font:inherit;text-align:left;" onclick="reminderGo('${r.itemType}','${r.itemId}')">
         <span class="reminder-icon">${r.icon}</span><span class="reminder-text">${esc(r.text)}</span>
-        <span class="reminder-go">&#8250;</span></div>`).join('');
+        <span class="reminder-go">&#8250;</span></button>`).join('');
   }
   document.getElementById('remindersModal').classList.add('open');
 }
@@ -1235,6 +1791,19 @@ function closeShareModal() { document.getElementById('shareModal').classList.rem
 
 async function buildShareSnapshot(opts) {
   const active = db.firearms.filter(f => !f.status || f.status === 'Active');
+  if (opts.photos) {
+    const photoKeys = active
+      .map(firearm => Array.isArray(firearm.images) && firearm.images[0])
+      .filter(Boolean)
+      .map(String);
+    const readiness = await ensureReferencedMediaReady({ keys: photoKeys, retry: true });
+    if (!readiness.ok) {
+      const error = new Error('Selected photos are not available on this device.');
+      error.code = 'MEDIA_INCOMPLETE';
+      error.mediaReadiness = readiness;
+      throw error;
+    }
+  }
   const fVal = active.reduce((s, f) => s + (parseFloat(f.price) || 0), 0);
   const accVal = db.accessories.reduce((s, a) => s + (parseFloat(a.price) || 0), 0);
   const rounds = db.ammo.reduce((s, a) => s + (parseInt(a.quantity) || 0), 0);
@@ -1254,9 +1823,15 @@ async function buildShareSnapshot(opts) {
   }
   const accessories = db.accessories.map(a => ({ name: a.name || '', category: a.category || '', brand: a.brand || '', model: a.model || '', price: parseFloat(a.price) || 0 }));
   return {
+    snapshotVersion: 1,
+    source: 'Firearms Vault',
+    appVersion: APP_VERSION,
     generatedAt: new Date().toISOString(), label: opts.label || '',
     totals: { firearms: active.length, value: fVal + accVal, accessories: db.accessories.length, rounds },
-    includeSerials: opts.serials, firearms, accessories
+    includePhotos: opts.photos,
+    includeSerials: opts.serials,
+    firearms,
+    accessories
   };
 }
 
@@ -1302,62 +1877,105 @@ async function createShare() {
     const result = document.createElement('div'); result.className = 'share-result-box';
     const heading = document.createElement('div'); heading.style.fontWeight = '600'; heading.style.marginBottom = '6px';
     heading.textContent = '✓ Share link created' + (opts.code ? ' · passcode protected' : '');
+    const summary = document.createElement('div'); summary.className = 'share-row-meta';
+    summary.textContent = [
+      expires_at ? 'Expires ' + fmtDate(expires_at) : 'No expiry',
+      opts.maxViews ? opts.maxViews + ' open' + (opts.maxViews === 1 ? '' : 's') + ' maximum' : 'Unlimited opens until expiry',
+      opts.photos ? 'photos included' : 'photos excluded',
+      opts.serials ? 'serial numbers included' : 'serial numbers excluded',
+      opts.code ? 'passcode protected' : 'link only'
+    ].join(' | ');
     const urlText = document.createElement('div'); urlText.className = 'share-url'; urlText.textContent = url;
-    const actions = document.createElement('div'); actions.style.marginTop = '8px';
+    const actions = document.createElement('div'); actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;';
     const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn btn-small btn-primary'; copy.textContent = 'Copy link';
-    copy.addEventListener('click', () => copyShareLink(url));
-    actions.appendChild(copy); result.append(heading, urlText, actions); box.appendChild(result);
+    copy.addEventListener('click', () => copyShareLink(url, copy, urlText));
+    actions.append(copy);
+    result.append(heading, summary, urlText, actions);
+    if (opts.code) {
+      const codeNote = document.createElement('p'); codeNote.className = 'share-privacy-note';
+      codeNote.style.marginTop = '10px';
+      codeNote.textContent = 'The passcode is not included in this link and cannot be recovered. Send it separately through a different channel.';
+      result.appendChild(codeNote);
+    }
+    box.appendChild(result);
     document.getElementById('shareLabel').value = '';
     document.getElementById('shareCode').value = '';
     document.getElementById('shareMaxViews').value = '';
     document.getElementById('shareModal').dataset.dirty = 'false';
     renderSharesList();
   } catch (e) {
-    toast('Could not create share link: ' + (e.message || e), 'error');
+    if (e && e.code === 'MEDIA_INCOMPLETE') warnIncompleteMedia(e.mediaReadiness, 'Photo sharing', { force: true });
+    else toast('Could not create share link: ' + (e.message || e), 'error');
   } finally { btn.disabled = false; btn.textContent = 'Create share link'; }
 }
 
-function copyShareLink(url) {
+function showShareLinkForManualCopy(url, target) {
+  if (target) {
+    target.textContent = url;
+    target.title = '';
+  }
+  toast('Copy failed - the full link is now shown for manual copying.', 'error');
+}
+
+function copyShareLink(url, button, manualTarget) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(url).then(() => toast('Link copied to clipboard.', 'success'))
-      .catch(() => toast('Copy failed — select and copy the link manually.', 'error'));
-  } else { toast('Copy not supported — select the link manually.', 'info'); }
+    navigator.clipboard.writeText(url).then(() => {
+      toast('Link copied to clipboard.', 'success');
+      if (!button) return;
+      const original = button.textContent;
+      button.textContent = 'Copied';
+      button.disabled = true;
+      setTimeout(() => { button.textContent = original; button.disabled = false; }, 1800);
+    })
+      .catch(() => showShareLinkForManualCopy(url, manualTarget));
+  } else { showShareLinkForManualCopy(url, manualTarget); }
 }
 
 async function renderSharesList() {
   const list = document.getElementById('shareList');
   if (!list) return;
   list.innerHTML = '<div style="color:var(--text3);font-size:0.8rem;">Loading…</div>';
-  await window.sbClient.from('shares').delete().eq('owner', CloudSync.uid).lt('expires_at', new Date().toISOString());
+  const cleanup = await window.sbClient.from('shares').delete().eq('owner', CloudSync.uid).lt('expires_at', new Date().toISOString());
   const { data, error } = await window.sbClient.from('shares')
     .select('token,label,created_at,expires_at,max_views,access_count,last_accessed_at,has_access_code').eq('owner', CloudSync.uid).order('created_at', { ascending: false });
   if (error) { list.innerHTML = '<div style="color:var(--red);font-size:0.8rem;">Could not load shares.</div>'; return; }
   if (!data.length) { list.innerHTML = '<div style="color:var(--text3);font-size:0.8rem;">No active share links.</div>'; return; }
   const now = Date.now();
   list.replaceChildren();
+  if (cleanup.error) {
+    const warning = document.createElement('div');
+    warning.className = 'share-privacy-note';
+    warning.setAttribute('role', 'status');
+    warning.textContent = 'Expired links could not be cleaned up just now. They remain inactive and can still be revoked below.';
+    list.appendChild(warning);
+  }
   data.forEach(s => {
     const url = shareUrl(s.token);
-    const exp = s.expires_at ? (new Date(s.expires_at).getTime() < now ? 'Expired' : 'Expires ' + fmtDate(s.expires_at)) : 'No expiry';
+    const expired = !!(s.expires_at && new Date(s.expires_at).getTime() < now);
+    const exp = s.expires_at ? (expired ? 'Expired' : 'Expires ' + fmtDate(s.expires_at)) : 'No expiry';
     const opens = (Number(s.access_count) || 0) + (s.max_views ? '/' + s.max_views : '') + ' open' + ((Number(s.access_count) || 0) === 1 ? '' : 's');
-    const metadata = [exp, opens, s.has_access_code ? 'passcode protected' : 'link only'];
+    const metadata = [expired ? 'Inactive' : 'Active', exp, opens, s.has_access_code ? 'passcode protected' : 'link only'];
     if (s.last_accessed_at) metadata.push('last opened ' + fmtDate(s.last_accessed_at));
     metadata.push('created ' + fmtDate(s.created_at));
     const row = document.createElement('div'); row.className = 'share-row';
     const info = document.createElement('div'); info.className = 'share-row-info';
     const label = document.createElement('div'); label.className = 'share-row-label'; label.textContent = s.label || 'Untitled share';
     const meta = document.createElement('div'); meta.className = 'share-row-meta'; meta.textContent = metadata.join(' · ');
-    const urlText = document.createElement('div'); urlText.className = 'share-url'; urlText.textContent = url;
+    const urlText = document.createElement('div'); urlText.className = 'share-url';
+    urlText.textContent = 'Private link ending ' + String(s.token).slice(-8);
+    urlText.title = url;
     info.append(label, meta, urlText);
     const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn btn-small btn-outline'; copy.textContent = 'Copy';
-    copy.addEventListener('click', () => copyShareLink(url));
+    copy.addEventListener('click', () => copyShareLink(url, copy, urlText));
     const revoke = document.createElement('button'); revoke.type = 'button'; revoke.className = 'btn btn-small btn-danger'; revoke.textContent = 'Revoke';
-    revoke.addEventListener('click', () => revokeShare(s.token));
+    revoke.addEventListener('click', () => revokeShare(s.token, s.label));
     row.append(info, copy, revoke); list.appendChild(row);
   });
 }
 
-async function revokeShare(token) {
-  if (!await confirmDialog('Revoke this share link? This prevents future opens and reloads, but cannot recall a copy that someone already opened or saved.', { title: 'Revoke share link', okText: 'Revoke', danger: true })) return;
+async function revokeShare(token, label) {
+  const name = String(label || 'this share link');
+  if (!await confirmDialog('Revoke "' + name + '"? This prevents future opens and reloads, but cannot recall a copy that someone already opened or saved.', { title: 'Revoke share link', okText: 'Revoke', danger: true })) return;
   const { error } = await window.sbClient.from('shares').delete().eq('token', token).eq('owner', CloudSync.uid);
   if (error) { toast('Could not revoke: ' + error.message, 'error'); return; }
   toast('Share link revoked.', 'success');
@@ -1391,17 +2009,29 @@ let _dashboardChartLoadStarted = false;
 function _destroyDashCharts() { _dashCharts.forEach(c => { try { c.destroy(); } catch (e) {} }); _dashCharts = []; }
 
 let _dashRange = 90;
-function setDashRange(n) { _dashRange = n; renderDashboard(); }
+function setDashRange(n) { _dashRange = n; render(); }
 window.setDashRange = setDashRange;
+let _dashAnalyticsExpanded = false;
+function toggleDashboardAnalytics() {
+  _dashAnalyticsExpanded = !_dashAnalyticsExpanded;
+  const analytics = document.querySelector('#dashAnalytics');
+  const button = document.querySelector('#dashAnalyticsToggle');
+  if (analytics) analytics.hidden = !_dashAnalyticsExpanded;
+  if (button) {
+    button.setAttribute('aria-expanded', _dashAnalyticsExpanded ? 'true' : 'false');
+    button.textContent = _dashAnalyticsExpanded ? 'Hide analytics' : 'Explore analytics';
+  }
+  if (_dashAnalyticsExpanded) requestAnimationFrame(() => _dashCharts.forEach(chart => { try { chart.resize(); } catch (_) {} }));
+}
+window.toggleDashboardAnalytics = toggleDashboardAnalytics;
 
 function renderDashboard() {
   if (!window.Chart && window.VaultAssets && !_dashboardChartLoadStarted) {
     _dashboardChartLoadStarted = true;
     window.VaultAssets.ensure('charts').then(() => {
-      if (currentTab === 'dashboard') renderDashboard();
+      if (currentTab === 'dashboard') render();
     }).catch(error => {
       const message = 'Charts could not load; dashboard summaries remain available.';
-      setSaveStatus('failed', message);
       showPersistentFeatureError(message);
       console.error('Dashboard chart load failed', error);
     });
@@ -1472,7 +2102,7 @@ function renderDashboard() {
   // Alerts (reminders) card
   const reminders = (typeof computeReminders === 'function') ? computeReminders() : [];
   const alertsCard = reminders.length ? '<div class="dash-card dash-wide"><h3>⚠️ Needs attention (' + reminders.length + ')</h3><div class="dash-alerts">' +
-    reminders.slice(0, 6).map(r => '<div class="dash-alert sev-' + r.sev + '" onclick="reminderGo(\'' + r.itemType + '\',\'' + r.itemId + '\')"><span class="dash-alert-ico">' + r.icon + '</span><span>' + esc(r.text) + '</span></div>').join('') +
+    reminders.slice(0, 6).map(r => '<button type="button" class="dash-alert sev-' + r.sev + '" style="width:100%;border-top:0;border-right:0;border-bottom:0;font:inherit;text-align:left;" onclick="reminderGo(\'' + r.itemType + '\',\'' + r.itemId + '\')"><span class="dash-alert-ico">' + r.icon + '</span><span>' + esc(r.text) + '</span></button>').join('') +
     '</div></div>' : '';
 
   // Highlights
@@ -1482,9 +2112,9 @@ function renderDashboard() {
     const nw = recent[0];
     const hl = (f, label, sub) => {
       const t = thumbOf(f);
-      const img = t ? '<img class="dh-img" src="' + t + '">' : '<div class="dh-img dh-ph">✦</div>';
-      return '<div class="dash-highlight" onclick="openDetail(\'' + f.id + '\')">' + img + '<div class="dh-text"><div class="dh-label">' + label +
-        '</div><div class="dh-title">' + esc((f.make || '') + ' ' + (f.model || '')) + '</div><div class="dh-sub">' + sub + '</div></div></div>';
+      const img = t ? '<img class="dh-img" src="' + t + '" alt="">' : '<div class="dh-img dh-ph" aria-hidden="true">✦</div>';
+      return '<button type="button" class="dash-highlight" style="width:100%;background:transparent;border:0;color:inherit;font:inherit;text-align:left;" onclick="openDetail(\'' + f.id + '\')">' + img + '<span class="dh-text"><span class="dh-label" style="display:block;">' + label +
+        '</span><span class="dh-title" style="display:block;">' + esc((f.make || '') + ' ' + (f.model || '')) + '</span><span class="dh-sub" style="display:block;">' + sub + '</span></span></button>';
     };
     highlightsCard = '<div class="dash-card"><h3>Highlights</h3>' + hl(mv, 'Most valuable', fmt$(getTotalInvestment(mv.id))) + (nw ? hl(nw, 'Newest acquisition', fmtDate(nw.dateAcquired)) : '') + '</div>';
   }
@@ -1493,7 +2123,7 @@ function renderDashboard() {
   const hist = (db.valueHistory || []).slice(-_dashRange);
   const hasValueChart = hist.length >= 2;
   const rangeBtns = '<span class="dash-range">' + [[30, '30d'], [90, '90d'], [365, '1y'], [100000, 'All']].map(r =>
-    '<button class="' + (_dashRange === r[0] ? 'active' : '') + '" onclick="setDashRange(' + r[0] + ')">' + r[1] + '</button>').join('') + '</span>';
+    '<button class="' + (_dashRange === r[0] ? 'active' : '') + '" aria-pressed="' + (_dashRange === r[0] ? 'true' : 'false') + '" onclick="setDashRange(' + r[0] + ')">' + r[1] + '</button>').join('') + '</span>';
 
   const hasC = !!window.Chart;
   const chartCard = (title, id, fallback) => '<div class="dash-card"><h3>' + title + '</h3>' +
@@ -1508,7 +2138,7 @@ function renderDashboard() {
   const nfaCard = '<div class="dash-card"><h3>NFA Items (' + nfaItems.length + ')</h3>' +
     '<div class="dash-nfa-status">' +
       '<div class="dash-nfa-pill" style="background:var(--green-bg);color:var(--green);"><span class="si">✓</span>Approved: ' + nfaApproved + '</div>' +
-      '<div class="dash-nfa-pill" style="background:var(--yellow-bg);color:#8a6d00;"><span class="si">⧖</span>Pending: ' + nfaPending + '</div>' +
+      '<div class="dash-nfa-pill" style="background:var(--yellow-bg);color:var(--warning-text);"><span class="si">◷</span>Pending: ' + nfaPending + '</div>' +
       (nfaDenied > 0 ? '<div class="dash-nfa-pill" style="background:var(--red-light);color:var(--red);"><span class="si">✕</span>Denied: ' + nfaDenied + '</div>' : '') +
     '</div>' +
     (avgWait !== null ? '<div class="dash-list-item" style="margin-top:12px;"><span class="label">Avg pending wait</span><span class="value">' + avgWait + ' days</span></div>' : '') +
@@ -1524,13 +2154,17 @@ function renderDashboard() {
     '<div class="dash-card dash-wide"><h3 class="dash-h3-flex"><span>Collection Value Over Time</span>' + rangeBtns + '</h3>' +
       (hasValueChart ? '<div class="dash-chart-wrap"><canvas id="valueChartCanvas"></canvas></div>' : note('Value history builds over time — check back after a few days of use.')) + '</div>' +
     highlightsCard +
-    chartCard('Firearms by Type', 'typeChartCanvas', typeFallback) +
-    chartCard('Top Calibers', 'calChartCanvas', calFallback) +
-    chartCard('Top Manufacturers', 'mfgChartCanvas', mfgFallback) +
-    nfaCard + ammoCard +
-    '<div class="dash-card"><h3>Condition</h3><div class="dash-list">' + (condList || note('No data.')) + '</div></div>' +
     '<div class="dash-card"><h3>Recent Acquisitions</h3><div class="dash-list">' + recentList + '</div></div>' +
-    '<div class="dash-card"><h3>Tags</h3><div class="dash-list">' + tagsList + '</div></div>';
+    '<div class="dash-section-head"><div><h3>Collection analytics</h3><p>Breakdowns by type, caliber, manufacturer, NFA status, condition, and tags.</p></div>' +
+      '<button type="button" class="btn btn-outline" id="dashAnalyticsToggle" aria-controls="dashAnalytics" aria-expanded="' + (_dashAnalyticsExpanded ? 'true' : 'false') + '" onclick="toggleDashboardAnalytics()">' + (_dashAnalyticsExpanded ? 'Hide analytics' : 'Explore analytics') + '</button></div>' +
+    '<div class="dash-analytics-grid" id="dashAnalytics"' + (_dashAnalyticsExpanded ? '' : ' hidden') + '>' +
+      chartCard('Firearms by Type', 'typeChartCanvas', typeFallback) +
+      chartCard('Top Calibers', 'calChartCanvas', calFallback) +
+      chartCard('Top Manufacturers', 'mfgChartCanvas', mfgFallback) +
+      nfaCard + ammoCard +
+      '<div class="dash-card"><h3>Condition</h3><div class="dash-list">' + (condList || note('No data.')) + '</div></div>' +
+      '<div class="dash-card"><h3>Tags</h3><div class="dash-list">' + tagsList + '</div></div>' +
+    '</div>';
 
   // ---- Chart.js instances ----
   if (hasC) {
@@ -1604,9 +2238,12 @@ function render() {
   const dash = document.getElementById('dashboardContainer');
   const toolbar = document.getElementById('mainToolbar');
 
+  try {
+
   updateContextualActions();
   updateBottomNav();
   updateFilterChips();
+  updatePageContext();
 
   // Show/hide toolbar based on tab
   // Show/hide card sort
@@ -1632,6 +2269,7 @@ function render() {
   if (currentTab === 'dealers') { renderDealersTab(); return; }
 
   const items = getFilteredItems();
+  updatePageContext(items.length);
   if (db.firearms.length === 0) { grid.style.display='none'; tc.style.display='none'; empty.style.display='block'; return; }
   empty.style.display = 'none';
 
@@ -1639,29 +2277,48 @@ function render() {
     grid.style.display='none'; tc.style.display='none';
     const t = currentView==='cards'?grid:tc;
     t.style.display = currentView==='cards'?'grid':'block';
-    t.innerHTML = '<div class="empty-inline"><div class="icon">&#128269;</div><p>No items match your search or filters.</p><button class="btn btn-outline" onclick="clearAllFilters()">Clear filters</button></div>';
+    const hasFilters = ['searchBox', 'filterType', 'filterCaliber', 'filterTag', 'filterCondition']
+      .some(id => (document.getElementById(id)?.value || '').trim());
+    if (!hasFilters && currentTab === 'nfa') {
+      t.innerHTML = tabEmpty('📄', 'No NFA items yet', 'Use Add NFA item when you are ready to track a suppressor, SBR, or other regulated item.', '');
+    } else if (!hasFilters && currentTab === 'disposed') {
+      t.innerHTML = tabEmpty('↗', 'No sold or transferred records yet', 'Records appear here after you mark a firearm sold, transferred, consigned, or otherwise disposed.', '');
+    } else {
+      t.innerHTML = '<div class="empty-inline"><div class="icon">&#128269;</div><p>No items match your search or filters.</p><button class="btn btn-outline" onclick="clearAllFilters()">Clear filters</button></div>';
+    }
     return;
   }
 
   if (currentView === 'cards') { grid.style.display='grid'; tc.style.display='none'; renderCards(getCardSortedItems(items)); }
   else { grid.style.display='none'; tc.style.display='block'; renderTable(items); }
+  } finally {
+    // Privacy mode must apply before this render yields; relying only on the
+    // mutation observer can expose newly-created serials or values for a frame.
+    refreshSensitiveElements(document);
+  }
 }
 
 function renderAmmoTab() {
   document.getElementById('cardGrid').style.display = 'none';
   document.getElementById('tableContainer').style.display = 'block';
   document.getElementById('emptyState').style.display = 'none';
-  const items = db.ammo;
+  const allItems = db.ammo || [];
+  const query = (document.getElementById('searchBox').value || '').trim().toLowerCase();
+  const items = query ? allItems.filter(a => [a.brand, a.caliber, a.location, a.notes]
+    .some(value => String(value || '').replace(/<[^>]*>/g, ' ').toLowerCase().includes(query))) : allItems;
   const totalRounds = items.reduce((s, a) => s + (parseInt(a.quantity) || 0), 0);
   const totalCost = items.reduce((s, a) => s + ((parseInt(a.quantity) || 0) * (parseFloat(a.pricePerRound) || 0)), 0);
+  updatePageContext(items.length);
 
   let h = `<div style="padding: 16px 24px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; font-size: 0.86rem; font-weight: 600;">
-    <span>Total Rounds: <span style="color: var(--accent);">${totalRounds.toLocaleString()}</span></span>
-    <span>Total Value: <span style="color: var(--accent);">$${totalCost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></span>
+    <span>Rounds shown: <span style="color: var(--accent);">${totalRounds.toLocaleString()}</span></span>
+    <span>Value shown: <span style="color: var(--accent);">$${totalCost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></span>
   </div>`;
 
   if (items.length === 0) {
-    h += tabEmpty('🎯', 'No ammunition tracked yet', 'Log rounds on hand, calibers, and value as you stock up.', '<button class="btn btn-primary" onclick="openAddAmmoModal()">+ Add Ammo</button>');
+    h += allItems.length
+      ? tabEmpty('🔍', 'No ammunition matches your search', 'Try a caliber, brand, load, or storage location.', '<button class="btn btn-outline" onclick="clearAllFilters()">Clear search</button>')
+      : tabEmpty('🎯', 'No ammunition tracked yet', 'Log rounds on hand, calibers, and value as you stock up.', '<button class="btn btn-primary" onclick="openAddAmmoModal()">Add ammunition</button>');
     document.getElementById('tableContainer').innerHTML = h;
     return;
   }
@@ -1672,7 +2329,7 @@ function renderAmmoTab() {
     const tc2 = (parseInt(a.quantity) || 0) * (parseFloat(a.pricePerRound) || 0);
     const low = isLowStock(a);
     const hasReceipt = a.receipt ? true : false;
-    h += `<tr style="cursor:pointer;" onclick="editAmmo('${a.id}')" class="${low?'low-stock':''}">
+    h += `<tr class="${low?'low-stock':''}">
       <td>${esc(a.brand||'--')}</td>
       <td>${esc(a.caliber||'--')}</td>
       <td class="num">${(parseInt(a.quantity) || 0).toLocaleString()}${low?'<span class="low-stock-badge">LOW</span>':''}</td>
@@ -1682,6 +2339,7 @@ function renderAmmoTab() {
       <td>${esc(a.location||'--')}</td>
       <td>${hasReceipt ? '<button class="btn btn-small btn-outline" onclick="event.stopPropagation();viewReceiptInBrowser(\''+a.id+'\',\'ammo\')">View</button> <a href="'+a.receipt+'" download="'+(a.receiptName||'receipt')+'" onclick="event.stopPropagation();" class="btn btn-small btn-file" style="text-decoration:none;display:inline-block;">DL</a>' : '<span style="color:var(--text3);">--</span>'}</td>
       <td style="text-align:right;white-space:nowrap;">
+        <button class="btn btn-small btn-outline" data-item-id="${escAttr(a.id)}" onclick="editAmmo(this.dataset.itemId)">Edit</button>
         <button class="btn btn-small btn-outline" onclick="event.stopPropagation();quickAmmoAdjust('${a.id}',-1)" title="Subtract">-</button>
         <button class="btn btn-small btn-outline" onclick="event.stopPropagation();quickAmmoAdjust('${a.id}',1)" title="Add">+</button>
         <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); deleteAmmo('${a.id}')">Del</button>
@@ -1740,7 +2398,8 @@ function renderCards(items) {
     const disposed = (f.status && f.status !== 'Active') ? ' disposed' : '';
     const tags = (f.tags && f.tags.length > 0) ? `<div class="card-tags">${f.tags.map(t => `<span class="tag-pill">${esc(t)}</span>`).join('')}</div>` : '';
     const checked = bulkSelected.has(f.id) ? 'checked' : '';
-    return `<div class="card${disposed}" onclick="openDetail('${f.id}')"><input type="checkbox" class="card-checkbox" ${checked} onclick="toggleBulkSelect('${f.id}',event)">${img}${nfa}${stamp}<div class="card-body">
+    const itemName = ((f.make || '') + ' ' + (f.model || '')).trim() || 'firearm';
+    return `<article class="card${disposed}"><input type="checkbox" class="card-checkbox" data-item-id="${escAttr(f.id)}" ${checked} onclick="toggleBulkSelect(this.dataset.itemId,event)"><button type="button" class="card-hitarea" data-card-id="${escAttr(f.id)}" aria-label="Open ${escAttr(itemName)} details" onclick="openDetail(this.dataset.cardId)"></button>${img}${nfa}${stamp}<div class="card-body">
       <div class="card-title">${esc(f.make||'')} ${esc(f.model||'')}</div>
       <div class="card-subtitle">${esc(f.type||'')} &middot; ${esc(f.caliber||'')}</div>
       <div class="card-details">
@@ -1748,12 +2407,12 @@ function renderCards(items) {
         <div class="card-detail"><label>Barrel</label><span>${esc(f.barrel||'--')}</span></div>
         <div class="card-detail"><label>Condition</label><span>${esc(f.condition||'--')}</span></div>
         <div class="card-detail"><label>Value</label><span>${p}</span></div>
-      </div>${tags}</div></div>`;
+      </div>${tags}</div></article>`;
   }).join('');
 }
 
 function renderTable(items) {
-  const cols = [{key:'_cb',label:'',sortable:false},{key:'_img',label:'',sortable:false},{key:'make',label:'Make'},{key:'model',label:'Model'},{key:'serial',label:'Serial #'},{key:'caliber',label:'Caliber'},{key:'type',label:'Type'},{key:'barrel',label:'Barrel'},{key:'condition',label:'Condition'},{key:'price',label:'Price',num:true},{key:'dateAcquired',label:'Acquired'},{key:'status',label:'Status'},{key:'_nfa',label:'NFA',sortable:false},{key:'_tags',label:'Tags',sortable:false}];
+  const cols = [{key:'_cb',label:'',sortable:false},{key:'_img',label:'',sortable:false},{key:'make',label:'Make'},{key:'model',label:'Model'},{key:'serial',label:'Serial #'},{key:'caliber',label:'Caliber'},{key:'type',label:'Type'},{key:'barrel',label:'Barrel'},{key:'condition',label:'Condition'},{key:'price',label:'Price',num:true},{key:'dateAcquired',label:'Acquired'},{key:'status',label:'Status'},{key:'_nfa',label:'NFA',sortable:false},{key:'_tags',label:'Tags',sortable:false},{key:'_open',label:'Actions',sortable:false}];
   const arrow = k => sortCol!==k ? '' : `<span class="sort-arrow">${sortDir==='asc'?'&#9650;':'&#9660;'}</span>`;
   let h = '<table class="data-table"><thead><tr>';
   cols.forEach(c => { const s=c.sortable!==false; h+=`<th class="${c.num?'num':''}" ${s?`onclick="sortTable('${c.key}')"`:''}style="${s?'':'cursor:default'}">${c.label}${s?arrow(c.key):''}</th>`; });
@@ -1769,7 +2428,7 @@ function renderTable(items) {
     const pl = getProfitLoss(f);
     const plStr = pl !== null ? ` <span class="${pl>=0?'profit':'loss'}">${money(Math.abs(pl))} ${pl>=0?'+':'-'}</span>` : '';
     const tags = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${esc(t)}</span>`).join(' ') : '';
-    h+=`<tr onclick="openDetail('${f.id}')" style="cursor:pointer"><td><input type="checkbox" class="card-checkbox table-cb" ${bulkSelected.has(f.id)?'checked':''} onclick="toggleBulkSelect('${f.id}',event)"></td><td>${im}</td><td>${esc(f.make||'--')}</td><td>${esc(f.model||'--')}</td><td class="mono-id">${esc(f.serial||'--')}</td><td>${esc(f.caliber||'--')}</td><td>${esc(f.type||'--')}</td><td>${esc(f.barrel||'--')}</td><td>${esc(f.condition||'--')}</td><td class="num">${pr}</td><td>${fmtDate(f.dateAcquired)}</td><td>${status}${plStr}</td><td>${nfa}</td><td>${tags}</td></tr>`;
+    h+=`<tr><td><input type="checkbox" class="card-checkbox table-cb" data-item-id="${escAttr(f.id)}" ${bulkSelected.has(f.id)?'checked':''} onclick="toggleBulkSelect(this.dataset.itemId,event)"></td><td>${im}</td><td>${esc(f.make||'--')}</td><td>${esc(f.model||'--')}</td><td class="mono-id">${esc(f.serial||'--')}</td><td>${esc(f.caliber||'--')}</td><td>${esc(f.type||'--')}</td><td>${esc(f.barrel||'--')}</td><td>${esc(f.condition||'--')}</td><td class="num">${pr}</td><td>${fmtDate(f.dateAcquired)}</td><td>${status}${plStr}</td><td>${nfa}</td><td>${tags}</td><td><button type="button" class="btn btn-small btn-outline" data-card-id="${escAttr(f.id)}" onclick="openDetail(this.dataset.cardId)">View</button></td></tr>`;
   });
 
   h += '</tbody></table>';
@@ -1810,10 +2469,11 @@ function _appDialog(o) {
     const ov = document.createElement('div');
     ov.className = 'modal-overlay app-dialog open';
     const okClass = o.danger ? 'btn-danger' : 'btn-primary';
+    const inputLabel = o.inputLabel || o.title || 'Response';
     ov.innerHTML = '<div class="modal" style="max-width:430px;">'
       + '<div class="modal-header"><h2>' + esc(o.title || 'Please confirm') + '</h2></div>'
-      + '<div class="modal-body"><p style="margin:0;line-height:1.5;color:var(--text);">' + esc(o.message || '') + '</p>'
-      + (o.input ? '<input type="text" id="_dlgInput" class="dlg-input" value="' + escAttr(o.def || '') + '">' : '')
+      + '<div class="modal-body"><p id="_dlgMessage" style="margin:0;line-height:1.5;color:var(--text);">' + esc(o.message || '') + '</p>'
+      + (o.input ? '<label class="dlg-input-label" for="_dlgInput">' + esc(inputLabel) + '</label><input type="text" id="_dlgInput" class="dlg-input" aria-describedby="_dlgMessage" value="' + escAttr(o.def || '') + '">' : '')
       + '</div><div class="modal-footer">'
       + (o.cancel === false ? '' : '<button class="btn btn-outline" data-dlg="cancel">' + esc(o.cancelText || 'Cancel') + '</button>')
       + '<button class="btn ' + okClass + '" data-dlg="ok">' + esc(o.okText || 'OK') + '</button>'
@@ -1836,7 +2496,149 @@ function _appDialog(o) {
   });
 }
 function confirmDialog(message, opts) { opts = opts || {}; return _appDialog({ message, title: opts.title || 'Please confirm', okText: opts.okText || 'Confirm', cancelText: opts.cancelText, danger: opts.danger }); }
-function promptDialog(message, def, opts) { opts = opts || {}; return _appDialog({ message, def: def || '', input: true, title: opts.title || '', okText: opts.okText || 'OK' }); }
+function promptDialog(message, def, opts) { opts = opts || {}; return _appDialog({ message, def: def || '', input: true, inputLabel: opts.inputLabel, title: opts.title || '', okText: opts.okText || 'OK' }); }
+
+// ---- Safe edit sessions -------------------------------------------------
+// A form can stay open while cloud sync refreshes db in the background. Keep
+// the record as it looked when the form opened, then three-way merge on save:
+// untouched form fields follow the latest record, local-only edits are applied,
+// and overlapping field edits always ask the user which value to keep.
+const recordEditSessions = Object.create(null);
+const RECORD_EDIT_LABELS = {
+  firearms: {
+    make: 'Manufacturer', model: 'Model', serial: 'Serial number', caliber: 'Caliber', type: 'Type',
+    barrel: 'Barrel length', dateAcquired: 'Date acquired', price: 'Purchase price', condition: 'Condition',
+    notes: 'Notes', images: 'Photos', tags: 'Tags', isNFA: 'NFA item', nfaType: 'NFA type',
+    formType: 'Form type', dateSubmitted: 'Date submitted', dateApproved: 'Date approved',
+    stampStatus: 'Stamp status', regType: 'Registration type', stampPdf: 'Tax stamp file',
+    stampPdfName: 'Tax stamp filename', status: 'Collection status', dispDate: 'Disposition date',
+    dispBuyer: 'Transferee', dispPrice: 'Disposition price', dispFFL: 'Disposition FFL',
+    dispNotes: 'Disposition notes', receipt: 'Receipt', receiptName: 'Receipt filename',
+    documents: 'Documents', roundCount: 'Round count', warrantyExp: 'Warranty expiration',
+    customFields: 'Custom fields'
+  },
+  ammo: {
+    caliber: 'Caliber', brand: 'Brand or type', quantity: 'Quantity', purchaseDate: 'Purchase date',
+    pricePerRound: 'Price per round', location: 'Storage location', lowStock: 'Low-stock alert',
+    notes: 'Notes', receipt: 'Receipt', receiptName: 'Receipt filename'
+  },
+  accessories: {
+    name: 'Accessory name', category: 'Category', brand: 'Manufacturer', model: 'Model or part number',
+    serial: 'Serial number', price: 'Purchase price', purchaseDate: 'Purchase date', condition: 'Condition',
+    firearmId: 'Assigned firearm', notes: 'Notes', receipt: 'Receipt', receiptName: 'Receipt filename'
+  },
+  wishlist: {
+    make: 'Manufacturer', model: 'Model', caliber: 'Caliber', type: 'Type', price: 'Target price',
+    priority: 'Priority', dealer: 'Dealer or source', url: 'Link', notes: 'Notes'
+  },
+  dealers: {
+    name: 'Dealer name', ffl: 'FFL number', phone: 'Phone', email: 'Email', address: 'Address',
+    website: 'Website', notes: 'Notes'
+  }
+};
+
+function cloneEditValue(value) {
+  if (value === undefined || value === null || typeof value !== 'object') return value;
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
+function editValuesEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  if (left === undefined || right === undefined) return false;
+  try { return JSON.stringify(left) === JSON.stringify(right); } catch (_) { return false; }
+}
+
+function beginRecordEdit(collection, id, formRecord) {
+  const current = (db[collection] || []).find(item => String(item.id) === String(id));
+  if (!current) { delete recordEditSessions[collection]; return false; }
+  recordEditSessions[collection] = {
+    id: String(id),
+    baselineRecord: cloneEditValue(current),
+    baselineForm: cloneEditValue(formRecord || {})
+  };
+  return true;
+}
+
+function endRecordEdit(collection) { delete recordEditSessions[collection]; }
+
+function recordEditFieldLabel(collection, field) {
+  const configured = RECORD_EDIT_LABELS[collection] && RECORD_EDIT_LABELS[collection][field];
+  if (configured) return configured;
+  const words = String(field || 'field').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function summarizeEditConflictValue(value) {
+  if (privacyMode) return 'Hidden while privacy mode is on';
+  if (value === undefined || value === null || value === '') return '(empty)';
+  if (Array.isArray(value)) return value.length + ' item' + (value.length === 1 ? '' : 's');
+  if (typeof value === 'object') return 'Updated information';
+  let text = String(value);
+  if (text.startsWith('data:') || text.startsWith('@media:')) return 'Attached file';
+  text = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length > 80 ? text.slice(0, 77) + '...' : text;
+}
+
+async function mergeRecordEdit(collection, id, formRecord, attempt) {
+  attempt = Number(attempt) || 0;
+  const records = db[collection] || [];
+  const currentRecord = records.find(item => String(item.id) === String(id));
+  const current = cloneEditValue(currentRecord);
+  const session = recordEditSessions[collection];
+
+  // Defensive fallback for callers that did not open through the normal form:
+  // patch editable fields onto the latest record instead of replacing it.
+  if (!session || session.id !== String(id)) {
+    return { record: Object.assign(cloneEditValue(current || {}), cloneEditValue(formRecord), { id }), conflicts: [], localFields: Object.keys(formRecord || {}).filter(key => key !== 'id') };
+  }
+
+  const localFields = Object.keys(formRecord || {}).filter(field =>
+    field !== 'id' && !editValuesEqual(formRecord[field], session.baselineForm[field]));
+
+  if (!current) {
+    const restore = await confirmDialog(
+      'This record was deleted on another device while you were editing it. Restore the record with your changes, or leave it deleted and keep this form open?',
+      { title: 'Record deleted elsewhere', okText: 'Restore my edited record', cancelText: 'Leave deleted' }
+    );
+    if (!restore) return { record: null, conflicts: ['record'], localFields, cancelled: true };
+    const appeared = (db[collection] || []).find(item => String(item.id) === String(id));
+    if (appeared) return mergeRecordEdit(collection, id, formRecord, attempt + 1);
+    const restored = cloneEditValue(session.baselineRecord);
+    localFields.forEach(field => { restored[field] = cloneEditValue(formRecord[field]); });
+    restored.id = id;
+    return { record: restored, conflicts: ['record'], localFields, restored: true };
+  }
+
+  const merged = cloneEditValue(current);
+  const conflicts = [];
+  localFields.forEach(field => {
+    const remoteChanged = !editValuesEqual(current[field], session.baselineRecord[field]);
+    if (remoteChanged && !editValuesEqual(current[field], formRecord[field])) conflicts.push(field);
+    else merged[field] = cloneEditValue(formRecord[field]);
+  });
+
+  for (const field of conflicts) {
+    const label = recordEditFieldLabel(collection, field);
+    const keepMine = await confirmDialog(
+      label + ' changed on another device while this form was open. Latest saved value: "' +
+        summarizeEditConflictValue(current[field]) + '". Your value: "' +
+        summarizeEditConflictValue(formRecord[field]) + '".',
+      { title: 'Choose ' + label, okText: 'Keep my change', cancelText: 'Use latest saved value' }
+    );
+    merged[field] = cloneEditValue(keepMine ? formRecord[field] : current[field]);
+  }
+  const latest = (db[collection] || []).find(item => String(item.id) === String(id));
+  if (!editValuesEqual(latest, current)) {
+    if (attempt < 3) return mergeRecordEdit(collection, id, formRecord, attempt + 1);
+    toast('This record is still changing on another device. Review the latest changes and try Save again.', 'error', 8000);
+    return { record: null, conflicts, localFields, cancelled: true };
+  }
+  merged.id = id;
+  return { record: merged, conflicts, localFields };
+}
+
+window.mergeRecordEdit = mergeRecordEdit;
 
 // Rich text editor
 function rteCmd(cmd, val) { document.execCommand(cmd, false, val||null); }
@@ -1853,25 +2655,29 @@ async function rteLink() {
 // =====================================================
 // TABS
 // =====================================================
+const sectionSearchValues = Object.create(null);
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
+    const search = document.getElementById('searchBox');
+    if (search) sectionSearchValues[currentTab] = search.value;
     document.querySelectorAll('.tab').forEach(t => {
       t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); t.tabIndex = -1;
     });
     tab.classList.add('active');
     tab.setAttribute('aria-selected', 'true'); tab.tabIndex = 0;
     currentTab = tab.dataset.tab;
+    if (search) search.value = sectionSearchValues[currentTab] || '';
     sortCol = null;
     render();
   });
   tab.addEventListener('keydown', e => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
     e.preventDefault();
     const tabs = Array.from(document.querySelectorAll('.tab'));
     let i = tabs.indexOf(tab);
     if (e.key === 'Home') i = 0;
     else if (e.key === 'End') i = tabs.length - 1;
-    else i = (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    else i = (i + (['ArrowRight', 'ArrowDown'].includes(e.key) ? 1 : -1) + tabs.length) % tabs.length;
     tabs[i].focus(); tabs[i].click();
   });
 });
@@ -1885,23 +2691,46 @@ document.getElementById('filterCondition').addEventListener('change', render);
 // =====================================================
 // FIREARM MODAL
 // =====================================================
-function openAddModal() {
+async function openAddModal() {
   editingId = null;
+  endRecordEdit('firearms');
+  beginAttachmentSession('formModal');
+  const formModal = document.getElementById('formModal');
+  delete formModal.dataset.draftSaveCommitted;
+  delete formModal.dataset.firearmDraftKey;
   document.getElementById('modalTitle').textContent = 'Add Firearm';
+  document.getElementById('saveBtn').disabled = false;
   document.getElementById('saveBtn').textContent = 'Save Firearm';
   clearForm();
+  await restoreFirearmDraft();
   syncFirearmDisclosure(null);
   populateDispDealerPicker();
   document.getElementById('formModal').classList.add('open');
+}
+
+async function openAddNfaModal() {
+  await openAddModal();
+  document.getElementById('modalTitle').textContent = 'Add NFA Item';
+  document.getElementById('saveBtn').textContent = 'Save NFA Item';
+  document.getElementById('fIsNFA').checked = true;
+  document.getElementById('fStatus').value = 'Active';
+  toggleNFAFields();
+  toggleDispositionFields();
+  saveFirearmDraftSoon();
 }
 
 function openEditModal(id) {
   const f = db.firearms.find(x => x.id === id);
   if (!f) return;
   editingId = id;
+  beginAttachmentSession('formModal');
+  delete document.getElementById('formModal').dataset.draftSaveCommitted;
+  _firearmDraftOwnedImages.clear();
+  setFirearmDraftStatus('');
   document.getElementById('modalTitle').textContent = 'Edit Firearm';
   document.getElementById('saveBtn').textContent = 'Update Firearm';
   populateForm(f);
+  beginRecordEdit('firearms', id, collectFirearmFormRecord(id));
   syncFirearmDisclosure(f);
   populateDispDealerPicker();
   document.getElementById('formModal').classList.add('open');
@@ -1931,12 +2760,1211 @@ function pickDispDealer() {
 }
 
 function closeModal() {
+  endAttachmentSession('formModal');
   document.getElementById('formModal').classList.remove('open');
   editingId=null; tempImages=[]; tempTags=[]; tempStampPdf=null; tempStampPdfName=null;
+  endRecordEdit('firearms');
+  pendingWishlistMoveId = null;
   hideTagSuggestions();
 }
 
+const FIREARM_DRAFT_FIELDS = [
+  'fMake', 'fModel', 'fSerial', 'fCaliber', 'fType', 'fBarrel', 'fDateAcquired', 'fPrice',
+  'fCondition', 'fStatus', 'fIsNFA', 'fNFAType', 'fFormType', 'fDateSubmitted',
+  'fDateApproved', 'fStampStatus', 'fRegType', 'fDispDate', 'fDispBuyer', 'fDispPrice',
+  'fDispFFL', 'fRoundCount', 'fWarrantyExp'
+];
+let _firearmDraftTimer = null;
+let _firearmDraftRevision = 0;
+const _firearmDraftOwnedImages = new Set();
+const _pendingVaultOperations = new Set();
+function trackPendingVaultOperation(operation) {
+  const tracked = Promise.resolve(operation);
+  _pendingVaultOperations.add(tracked);
+  tracked.finally(() => _pendingVaultOperations.delete(tracked)).catch(() => {});
+  return tracked;
+}
+async function flushPendingVaultOperations() {
+  let ok = true;
+  while (_pendingVaultOperations.size) {
+    const results = await Promise.allSettled([..._pendingVaultOperations]);
+    if (results.some(result => result.status === 'rejected')) ok = false;
+  }
+  return ok;
+}
+async function waitForFormAttachments(modalId, label) {
+  const session = captureAttachmentSession(modalId);
+  const safe = await flushPendingVaultOperations();
+  if (!safe) {
+    toast((label || 'Attachment') + ' processing failed. The form was kept open so you can retry.', 'error', 9000);
+    return false;
+  }
+  return attachmentSessionActive(session);
+}
+function runCompatibilityWrite(writer) {
+  const sync = window.CloudSync;
+  if (sync && sync._runtimeWritesBlocked) {
+    return Promise.reject(new Error('Device cache writes are paused while the account is closing.'));
+  }
+  let operation;
+  if (sync && sync.uid && typeof sync.writeRuntime === 'function' && typeof sync.accountContext === 'function') {
+    const account = sync.accountContext();
+    operation = sync.writeRuntime(account, writer).then(active => {
+      if (!active) throw new Error('The account changed before the device cache write completed.');
+      return true;
+    });
+  } else {
+    operation = Promise.resolve().then(writer);
+  }
+  return trackPendingVaultOperation(operation);
+}
+function beginAttachmentSession(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) modal.dataset.attachmentSession = generateId();
+}
+function endAttachmentSession(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) modal.dataset.attachmentSession = generateId();
+}
+function captureAttachmentSession(modalId) {
+  const modal = document.getElementById(modalId);
+  return {
+    modalId,
+    token: modal && modal.dataset.attachmentSession,
+    account: window.CloudSync && CloudSync.uid && typeof CloudSync.accountContext === 'function'
+      ? CloudSync.accountContext()
+      : null
+  };
+}
+function attachmentSessionActive(session) {
+  const modal = session && document.getElementById(session.modalId);
+  if (!modal || !modal.classList.contains('open') || modal.dataset.attachmentSession !== session.token) return false;
+  return !session.account || (window.CloudSync && typeof CloudSync.contextActive === 'function' && CloudSync.contextActive(session.account));
+}
+function requireAttachmentSession(session) {
+  if (attachmentSessionActive(session)) return;
+  const error = new Error('The form changed before the attachment finished loading.');
+  error.code = 'STALE_ATTACHMENT_SESSION';
+  throw error;
+}
+window.flushPendingVaultOperations = flushPendingVaultOperations;
+
+// A remote/cross-tab auth sign-out cannot be cancelled. Preserve the active
+// record-entry form in the sync database before the shared runtime stores are
+// cleared, then offer it only to the same uid on the next authenticated boot.
+const OPEN_FORM_RECOVERY_VERSION = 1;
+const OPEN_FORM_RECOVERY_MODAL_IDS = [
+  'formModal', 'ammoModal', 'accessoryModal',
+  'maintenanceModal', 'wishlistModal', 'dealerModal'
+];
+const OPEN_FORM_RECOVERY_TIMEOUT_MS = 5000;
+const VAULT_TAB_SESSION_KEY = 'fv:tab-id:v1';
+const VAULT_TAB_WINDOW_PREFIX = 'fv-tab-v1:';
+let _openFormRecoveryRefreshTimer = null;
+let _openFormRecoveryRefreshModalId = null;
+let _openFormRecoveryRefreshWarned = false;
+const _openFormRecoveryRefreshes = new Set();
+let _vaultTabFallbackId = null;
+const _vaultTabInstanceId = crypto.randomUUID ? crypto.randomUUID() : generateId();
+const _vaultTabStartedAt = Number(performance && performance.timeOrigin || Date.now());
+let _vaultTabIdentityPromise = null;
+let _vaultTabChannel = null;
+
+function clearClonedTabPointers() {
+  try {
+    const keys = [];
+    for (let index = 0; index < sessionStorage.length; index++) keys.push(sessionStorage.key(index));
+    keys.filter(key => key && /^fv:(?:open-form-recovery|firearm-form-draft):.*:active$/.test(key))
+      .forEach(key => sessionStorage.removeItem(key));
+  } catch (_) {}
+}
+
+function assignVaultTabId(id, cloned) {
+  _vaultTabFallbackId = String(id || (crypto.randomUUID ? crypto.randomUUID() : generateId()));
+  try { sessionStorage.setItem(VAULT_TAB_SESSION_KEY, _vaultTabFallbackId); } catch (_) {}
+  try {
+    if (!window.name || String(window.name).startsWith(VAULT_TAB_WINDOW_PREFIX)) {
+      window.name = VAULT_TAB_WINDOW_PREFIX + _vaultTabFallbackId;
+    }
+  } catch (_) {}
+  if (cloned) clearClonedTabPointers();
+  return _vaultTabFallbackId;
+}
+
+function vaultTabId() {
+  if (_vaultTabFallbackId) return _vaultTabFallbackId;
+  try {
+    if (String(window.name || '').startsWith(VAULT_TAB_WINDOW_PREFIX)) {
+      return assignVaultTabId(String(window.name).slice(VAULT_TAB_WINDOW_PREFIX.length), false);
+    }
+  } catch (_) {}
+  try {
+    const existing = sessionStorage.getItem(VAULT_TAB_SESSION_KEY);
+    // window.open clones sessionStorage. A fresh child browsing context must
+    // never adopt the opener's recovery/draft pointers.
+    if (existing && !window.opener) return assignVaultTabId(existing, false);
+  } catch (_) {}
+  return assignVaultTabId(null, !!window.opener);
+}
+
+function ensureVaultTabIdentity() {
+  if (_vaultTabIdentityPromise) return _vaultTabIdentityPromise;
+  _vaultTabIdentityPromise = new Promise(resolve => {
+    const initialId = vaultTabId();
+    if (typeof BroadcastChannel !== 'function') { resolve(initialId); return; }
+    let losesClaim = false;
+    try {
+      _vaultTabChannel = new BroadcastChannel('fv-tab-identity-v1');
+      _vaultTabChannel.addEventListener('message', event => {
+        const message = event.data || {};
+        if (!['probe', 'presence'].includes(message.type) || message.instanceId === _vaultTabInstanceId ||
+            message.tabId !== vaultTabId()) return;
+        const remoteWins = Number(message.startedAt || 0) < _vaultTabStartedAt ||
+          (Number(message.startedAt || 0) === _vaultTabStartedAt && String(message.instanceId) < _vaultTabInstanceId);
+        if (remoteWins) losesClaim = true;
+        if (message.type === 'probe') try {
+          _vaultTabChannel.postMessage({
+            type: 'presence', tabId: vaultTabId(), instanceId: _vaultTabInstanceId,
+            startedAt: _vaultTabStartedAt
+          });
+        } catch (_) {}
+      });
+      _vaultTabChannel.postMessage({
+        type: 'probe', tabId: initialId, instanceId: _vaultTabInstanceId,
+        startedAt: _vaultTabStartedAt
+      });
+      setTimeout(() => {
+        if (losesClaim) assignVaultTabId(null, true);
+        resolve(vaultTabId());
+      }, 80);
+    } catch (_) { resolve(initialId); }
+  });
+  return _vaultTabIdentityPromise;
+}
+
+void ensureVaultTabIdentity();
+
+function legacyOpenFormRecoveryKey(uid) {
+  return 'fv:open-form-recovery:' + String(uid || '');
+}
+
+function openFormRecoveryPrefix(uid) {
+  return legacyOpenFormRecoveryKey(uid) + ':';
+}
+
+function openFormRecoveryActivePointerKey(uid) {
+  return legacyOpenFormRecoveryKey(uid) + ':active';
+}
+
+function activeOpenFormRecoveryId(uid, create) {
+  const pointerKey = openFormRecoveryActivePointerKey(uid);
+  try {
+    const existing = sessionStorage.getItem(pointerKey);
+    if (existing) return existing;
+  } catch (_) {}
+  if (create === false) return null;
+  const id = crypto.randomUUID ? crypto.randomUUID() : generateId();
+  try { sessionStorage.setItem(pointerKey, id); } catch (_) {}
+  return id;
+}
+
+function openFormRecoveryKey(uid, recoveryId) {
+  return openFormRecoveryPrefix(uid) + String(recoveryId || activeOpenFormRecoveryId(uid, true));
+}
+
+function openFormRecoveryResolvedKey(uid, recoveryKey) {
+  return String(recoveryKey || openFormRecoveryKey(uid)) + ':resolved';
+}
+
+function hasOpenFormRecoveryResolution(uid, recoveryKey) {
+  const key = openFormRecoveryResolvedKey(uid, recoveryKey);
+  const valid = raw => {
+    try {
+      const value = JSON.parse(raw || 'null');
+      return !!value && value.version === 1 && String(value.uid || '') === String(uid || '') &&
+        (!value.recoveryKey || value.recoveryKey === String(recoveryKey || openFormRecoveryKey(uid)));
+    } catch (_) { return false; }
+  };
+  try { if (valid(localStorage.getItem(key))) return true; } catch (_) {}
+  try { if (valid(sessionStorage.getItem(key))) return true; } catch (_) {}
+  return false;
+}
+
+function markOpenFormRecoveryResolved(uid, recoveryKey) {
+  const targetKey = String(recoveryKey || openFormRecoveryKey(uid));
+  const key = openFormRecoveryResolvedKey(uid, targetKey);
+  const value = JSON.stringify({
+    version: 1, uid: String(uid || ''), recoveryKey: targetKey,
+    resolvedAt: new Date().toISOString()
+  });
+  let durable = false;
+  try { localStorage.setItem(key, value); durable = true; } catch (_) {}
+  // Helpful for a same-tab retry, but never sufficient on its own: closing the
+  // browser would lose it while a stale IndexedDB recovery record survives.
+  try { sessionStorage.setItem(key, value); } catch (_) {}
+  return durable;
+}
+
+function clearOpenFormRecoveryResolution(uid, recoveryKey) {
+  const key = openFormRecoveryResolvedKey(uid, recoveryKey);
+  try { localStorage.removeItem(key); } catch (_) {}
+  try { sessionStorage.removeItem(key); } catch (_) {}
+  return !hasOpenFormRecoveryResolution(uid, recoveryKey);
+}
+
+function activeRecoverableForm() {
+  for (const id of OPEN_FORM_RECOVERY_MODAL_IDS) {
+    const modal = document.getElementById(id);
+    if (modal && modal.classList.contains('open') && modal.dataset.dirty === 'true') return modal;
+  }
+  return null;
+}
+
+function recoveryFormContext(modalId) {
+  if (modalId === 'formModal') return { mode: editingId ? 'edit' : 'add', recordId: editingId || null };
+  if (modalId === 'ammoModal') return { mode: editingAmmoId ? 'edit' : 'add', recordId: editingAmmoId || null };
+  if (modalId === 'accessoryModal') return { mode: editingAccessoryId ? 'edit' : 'add', recordId: editingAccessoryId || null };
+  if (modalId === 'maintenanceModal') return { mode: 'add', recordId: editingMaintenanceId || null };
+  if (modalId === 'wishlistModal') return { mode: editingWishlistId ? 'edit' : 'add', recordId: editingWishlistId || null };
+  if (modalId === 'dealerModal') return { mode: editingDealerId ? 'edit' : 'add', recordId: editingDealerId || null };
+  return null;
+}
+
+function serializeRecoveryControls(modal) {
+  const controls = [];
+  modal.querySelectorAll('input[id], select[id], textarea[id], [contenteditable="true"][id]').forEach(control => {
+    const type = String(control.type || '').toLowerCase();
+    if (['file', 'password', 'hidden', 'button', 'submit', 'reset'].includes(type)) return;
+    if (control.isContentEditable) {
+      controls.push({ id: control.id, kind: 'html', value: sanitizeRichText(control.innerHTML || '') });
+    } else if (type === 'checkbox' || type === 'radio') {
+      controls.push({ id: control.id, kind: 'checked', value: !!control.checked });
+    } else {
+      controls.push({ id: control.id, kind: 'value', value: String(control.value == null ? '' : control.value) });
+    }
+  });
+  return controls;
+}
+
+function recoveryAttachment(value, kind) {
+  if (typeof value !== 'string') return null;
+  if (kind === 'image') return /^data:image\/(?:png|jpe?g|webp|gif|bmp);base64,/i.test(value) ? value : null;
+  return /^data:(?:application\/pdf|image\/(?:png|jpe?g|webp|gif|bmp));base64,/i.test(value) ? value : null;
+}
+
+function captureRecoveryExtras(modalId) {
+  if (modalId === 'formModal') {
+    const draft = collectFirearmDraft();
+    return {
+      images: draft.images,
+      ownedImages: draft.ownedImages,
+      imageData: draft.imageData,
+      documents: draft.documents,
+      tags: draft.tags,
+      stampPdf: draft.stampPdf,
+      stampPdfName: draft.stampPdfName,
+      receipt: draft.receipt,
+      receiptName: draft.receiptName,
+      customFields: draft.customFields,
+      imageIndex: draft.imageIndex,
+      sourceWishlistId: draft.sourceWishlistId
+    };
+  }
+  if (modalId === 'ammoModal') {
+    return { receipt: tempReceipts.a, receiptName: tempReceipts.aName };
+  }
+  if (modalId === 'accessoryModal') {
+    return { receipt: tempReceipts.acc, receiptName: tempReceipts.accName };
+  }
+  return {};
+}
+
+function validOpenFormRecovery(snapshot, uid) {
+  return !!snapshot && snapshot.version === OPEN_FORM_RECOVERY_VERSION &&
+    String(snapshot.uid || '') === String(uid || '') &&
+    OPEN_FORM_RECOVERY_MODAL_IDS.includes(snapshot.modalId) &&
+    (snapshot.mode === 'add' || snapshot.mode === 'edit') &&
+    Array.isArray(snapshot.controls) && snapshot.controls.length <= 150 &&
+    snapshot.controls.every(control => control && typeof control.id === 'string' && control.id.length <= 100 &&
+      ['value', 'checked', 'html'].includes(control.kind));
+}
+
+async function waitForRecoveryAttachments() {
+  let timer = null;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => resolve({ complete: false, ok: false }), OPEN_FORM_RECOVERY_TIMEOUT_MS);
+  });
+  const settled = flushPendingVaultOperations()
+    .then(ok => ({ complete: true, ok }))
+    .catch(() => ({ complete: true, ok: false }));
+  const result = await Promise.race([settled, timeout]);
+  clearTimeout(timer);
+  return result;
+}
+
+async function persistOpenFormRecoverySnapshot(modal, owner, attachments, recoveryKey) {
+  await ensureVaultTabIdentity();
+  const key = String(recoveryKey || modal.dataset.recoveryKey || openFormRecoveryKey(owner));
+  // A later genuine recovery supersedes any cleanup tombstone from a form that
+  // was already saved/discarded.
+  if (!clearOpenFormRecoveryResolution(owner, key)) {
+    return { ok: false, status: 'resolution-marker-locked', captured: false };
+  }
+  const context = recoveryFormContext(modal.id);
+  if (!context) return { ok: true, status: 'unsupported-form', captured: false };
+  const savedAt = new Date().toISOString();
+  const snapshot = {
+    version: OPEN_FORM_RECOVERY_VERSION,
+    uid: owner,
+    tabId: vaultTabId(),
+    recoveryKey: key,
+    savedAt,
+    modalId: modal.id,
+    mode: context.mode,
+    recordId: context.recordId,
+    controls: serializeRecoveryControls(modal),
+    extras: captureRecoveryExtras(modal.id),
+    attachmentsComplete: attachments.complete && attachments.ok
+  };
+  let fallbackSafe = false;
+  let primarySafe = false;
+  try {
+    sessionStorage.setItem(key, JSON.stringify(snapshot));
+    fallbackSafe = true;
+  } catch (_) {}
+  try {
+    await CloudSync.storePut('meta', { key, uid: owner, value: snapshot, updatedAt: savedAt });
+    primarySafe = true;
+  } catch (error) {
+    console.warn('Open form recovery could not be saved to IndexedDB:', error);
+  }
+  // Bind even a best-effort snapshot to the live modal. If sign-out fails
+  // closed and the user reauthenticates in this tab, the eventual Save or
+  // Discard will resolve this exact record instead of leaving a stale Add.
+  modal.dataset.recoveredForm = 'true';
+  modal.dataset.recoveryOwner = owner;
+  modal.dataset.recoveryKey = key;
+  return {
+    // A recovery record without every pending attachment is useful as a
+    // best-effort fallback, but it is not safe enough to authorize teardown.
+    // Callers such as forced sign-out must fail closed and keep this tab alive
+    // until the photo/PDF reads finish or the user explicitly discards them.
+    ok: primarySafe && snapshot.attachmentsComplete,
+    status: !snapshot.attachmentsComplete ? 'attachments-incomplete'
+      : primarySafe ? 'saved' : fallbackSafe ? 'session-fallback-unsafe' : 'failed',
+    captured: true,
+    attachmentsComplete: snapshot.attachmentsComplete
+  };
+}
+
+async function preserveOpenDirtyFormSession(uid) {
+  const owner = String(uid || '');
+  if (!owner || !window.CloudSync || String(CloudSync.uid || '') !== owner) {
+    return { ok: false, status: 'account-changed' };
+  }
+
+  // Select synchronously: flushFirearmDraft can legitimately clear data-dirty.
+  const modal = activeRecoverableForm();
+  if (!modal) return { ok: true, status: 'no-open-form', captured: false };
+  if (modal.dataset.recoverySaveCommitted === 'true' || modal.dataset.draftSaveCommitted === 'true') {
+    return { ok: false, status: 'committed-cleanup-pending', captured: false };
+  }
+  const context = recoveryFormContext(modal.id);
+  if (!context) return { ok: true, status: 'unsupported-form', captured: false };
+
+  const attachments = await waitForRecoveryAttachments();
+  if (!modal.classList.contains('open') || String(CloudSync.uid || '') !== owner) {
+    return { ok: false, status: 'account-changed' };
+  }
+
+  return persistOpenFormRecoverySnapshot(modal, owner, attachments, modal.dataset.recoveryKey || null);
+}
+
+async function refreshRecoveredFormSession(modalId) {
+  const modal = document.getElementById(modalId);
+  const owner = modal && modal.dataset.recoveryOwner;
+  if (!modal || modal.dataset.recoveredForm !== 'true' || modal.dataset.recoveryResolving === 'true' || !modal.classList.contains('open') ||
+      !owner || !window.CloudSync || String(CloudSync.uid || '') !== String(owner)) {
+    return { ok: false, status: 'inactive' };
+  }
+  const attachments = await waitForRecoveryAttachments();
+  if (modal.dataset.recoveredForm !== 'true' || !modal.classList.contains('open') ||
+      String(CloudSync.uid || '') !== String(owner)) {
+    return { ok: false, status: 'inactive' };
+  }
+  const result = await persistOpenFormRecoverySnapshot(
+    modal, String(owner), attachments, modal.dataset.recoveryKey || null
+  );
+  if (result.ok) {
+    _openFormRecoveryRefreshWarned = false;
+  } else if (!_openFormRecoveryRefreshWarned) {
+    _openFormRecoveryRefreshWarned = true;
+    toast('This recovered form could not update its device recovery copy. Keep this tab open and try again.', 'error', 9000);
+  }
+  return result;
+}
+
+function saveRecoveredFormSoon(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal || modal.dataset.recoveredForm !== 'true' || modal.dataset.recoveryResolving === 'true' || !modal.classList.contains('open')) return;
+  clearTimeout(_openFormRecoveryRefreshTimer);
+  _openFormRecoveryRefreshModalId = modalId;
+  _openFormRecoveryRefreshTimer = setTimeout(() => {
+    _openFormRecoveryRefreshTimer = null;
+    _openFormRecoveryRefreshModalId = null;
+    const refresh = refreshRecoveredFormSession(modalId);
+    _openFormRecoveryRefreshes.add(refresh);
+    refresh.finally(() => _openFormRecoveryRefreshes.delete(refresh)).catch(() => {});
+  }, 450);
+}
+
+async function readOpenFormRecovery(uid) {
+  await ensureVaultTabIdentity();
+  const owner = String(uid || '');
+  const activeId = activeOpenFormRecoveryId(owner, false);
+  const activeKey = activeId ? openFormRecoveryKey(owner, activeId) : null;
+  const legacyKey = legacyOpenFormRecoveryKey(owner);
+  const candidates = [];
+  const addCandidate = (key, value, priority) => {
+    if (!validOpenFormRecovery(value, owner)) return;
+    candidates.push({ key, priority, value: Object.assign({}, value, { recoveryKey: key }) });
+  };
+
+  // The per-tab pointer is authoritative. Each tab therefore reopens its own
+  // unfinished form even when another tab saved a different form later.
+  if (activeKey) {
+    try { addCandidate(activeKey, JSON.parse(sessionStorage.getItem(activeKey) || 'null'), 400); } catch (_) {}
+    if (window.CloudSync && CloudSync.storeGet) {
+      try {
+        const stored = await CloudSync.storeGet('meta', activeKey);
+        addCandidate(activeKey, stored && String(stored.uid || '') === owner ? stored.value : null, 400);
+      } catch (error) { console.warn('Open form recovery could not be read from IndexedDB:', error); }
+    }
+  }
+
+  // One-time compatibility for the original shared key.
+  try { addCandidate(legacyKey, JSON.parse(sessionStorage.getItem(legacyKey) || 'null'), 250); } catch (_) {}
+  if (window.CloudSync && CloudSync.storeGet) {
+    try {
+      const legacy = await CloudSync.storeGet('meta', legacyKey);
+      addCandidate(legacyKey, legacy && String(legacy.uid || '') === owner ? legacy.value : null, 240);
+    } catch (_) {}
+  }
+
+  // If this is a restored browser session without its pointer, keep every
+  // sibling record intact and offer the newest orphan. Resolution later
+  // deletes only the exact recovery key chosen here.
+  if (window.CloudSync && CloudSync.storeGetAll) {
+    try {
+      const records = await CloudSync.storeGetAll('meta');
+      records.forEach(record => {
+        if (!record || String(record.uid || '') !== owner ||
+            !String(record.key || '').startsWith(openFormRecoveryPrefix(owner))) return;
+        if (record.value && record.value.tabId && record.value.tabId !== vaultTabId()) return;
+        addCandidate(String(record.key), record.value, 100);
+      });
+    } catch (error) { console.warn('Open form recovery list could not be read:', error); }
+  }
+
+  candidates.sort((a, b) => b.priority - a.priority ||
+    String(b.value.savedAt || '').localeCompare(String(a.value.savedAt || '')));
+  const uniqueCandidates = [];
+  const seenKeys = new Set();
+  for (const candidate of candidates) {
+    if (seenKeys.has(candidate.key)) continue;
+    seenKeys.add(candidate.key);
+    uniqueCandidates.push(candidate);
+  }
+  for (const candidate of uniqueCandidates) {
+    if (hasOpenFormRecoveryResolution(owner, candidate.key)) {
+      try {
+        await clearOpenFormRecoveryRecord(owner, candidate.key, { keepResolved: true });
+        clearOpenFormRecoveryResolution(owner, candidate.key);
+      } catch (_) {}
+      continue;
+    }
+    const id = candidate.key.startsWith(openFormRecoveryPrefix(owner))
+      ? candidate.key.slice(openFormRecoveryPrefix(owner).length) : null;
+    if (id) {
+      try { sessionStorage.setItem(openFormRecoveryActivePointerKey(owner), id); } catch (_) {}
+    }
+    return candidate.value;
+  }
+  return null;
+}
+
+async function clearOpenFormRecoveryRecord(uid, key, options) {
+  const opts = options || {};
+  const failures = [];
+  try { sessionStorage.removeItem(key); } catch (error) { failures.push(error); }
+  if (window.CloudSync && CloudSync.storeDelete) {
+    try { await CloudSync.storeDelete('meta', key); } catch (error) { failures.push(error); }
+  }
+  const activeId = activeOpenFormRecoveryId(uid, false);
+  if (activeId && openFormRecoveryKey(uid, activeId) === key) {
+    try { sessionStorage.removeItem(openFormRecoveryActivePointerKey(uid)); } catch (error) { failures.push(error); }
+  }
+  if (!opts.keepResolved && !clearOpenFormRecoveryResolution(uid, key)) {
+    failures.push(new Error('Could not clear the resolved recovery marker.'));
+  }
+  if (failures.length) throw failures[0];
+  return true;
+}
+
+async function clearOpenFormRecoveryForUser(uid) {
+  await ensureVaultTabIdentity();
+  const owner = String(uid || '');
+  const legacyKey = legacyOpenFormRecoveryKey(owner);
+  const prefix = openFormRecoveryPrefix(owner);
+  const recoveryKeys = new Set([legacyKey]);
+  try {
+    for (let index = 0; index < sessionStorage.length; index++) {
+      const key = sessionStorage.key(index);
+      if (key === legacyKey || (key && key.startsWith(prefix) && !key.endsWith(':resolved') && key !== openFormRecoveryActivePointerKey(owner))) {
+        recoveryKeys.add(key);
+      }
+    }
+  } catch (_) {}
+  if (window.CloudSync && CloudSync.storeGetAll) {
+    try {
+      const records = await CloudSync.storeGetAll('meta');
+      records.forEach(record => {
+        const key = String(record && record.key || '');
+        if (String(record && record.uid || '') === owner && (key === legacyKey || key.startsWith(prefix))) recoveryKeys.add(key);
+      });
+    } catch (error) { throw error; }
+  }
+  const failures = [];
+  for (const key of recoveryKeys) {
+    try { await clearOpenFormRecoveryRecord(owner, key); } catch (error) { failures.push(error); }
+  }
+  try { sessionStorage.removeItem(openFormRecoveryActivePointerKey(owner)); } catch (error) { failures.push(error); }
+  // Remove any durable tombstones for this account after every matching
+  // recovery record has been deleted (Forget this device).
+  try {
+    const keys = [];
+    for (let index = 0; index < localStorage.length; index++) keys.push(localStorage.key(index));
+    keys.filter(key => key && (key === legacyKey + ':resolved' ||
+      (key.startsWith(prefix) && key.endsWith(':resolved')))).forEach(key => localStorage.removeItem(key));
+  } catch (error) { failures.push(error); }
+  if (failures.length) throw failures[0];
+  return true;
+}
+
+async function resolveRecoveredFormSession(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal || modal.dataset.recoveredForm !== 'true') return true;
+  modal.dataset.recoveryResolving = 'true';
+  if (_openFormRecoveryRefreshModalId === modalId) {
+    clearTimeout(_openFormRecoveryRefreshTimer);
+    _openFormRecoveryRefreshTimer = null;
+    _openFormRecoveryRefreshModalId = null;
+  }
+  // A refresh may already be past its debounce and writing IndexedDB. Wait for
+  // it before deleting so a late put cannot resurrect a saved/discarded form.
+  if (_openFormRecoveryRefreshes.size) await Promise.allSettled([..._openFormRecoveryRefreshes]);
+  const owner = modal.dataset.recoveryOwner || (window.CloudSync && CloudSync.uid);
+  const recoveryKey = modal.dataset.recoveryKey || openFormRecoveryKey(owner);
+  const resolutionSafe = markOpenFormRecoveryResolved(owner, recoveryKey);
+  let recoveryCleared = true;
+  try {
+    await clearOpenFormRecoveryRecord(owner, recoveryKey, { keepResolved: true });
+  } catch (error) {
+    recoveryCleared = false;
+    if (!resolutionSafe) {
+      delete modal.dataset.recoveryResolving;
+      modal.dataset.dirty = 'true';
+      toast('The recovery copy could not be resolved. Keep this tab open and do not save the item again.', 'error', 9000);
+      return false;
+    }
+    console.warn('A stale open-form recovery record was suppressed and will be cleaned up on the next boot.', error);
+  }
+  if (recoveryCleared) clearOpenFormRecoveryResolution(owner, recoveryKey);
+  delete modal.dataset.recoveredForm;
+  delete modal.dataset.recoveryOwner;
+  delete modal.dataset.recoveryKey;
+  delete modal.dataset.recoveryResolving;
+  delete modal.dataset.recoverySaveCommitted;
+  _openFormRecoveryRefreshWarned = false;
+  return true;
+}
+
+function holdCommittedRecoveredForm(modalId, buttonId) {
+  const modal = document.getElementById(modalId);
+  if (modal) {
+    modal.dataset.recoverySaveCommitted = 'true';
+    modal.dataset.dirty = 'true';
+  }
+  render();
+  setSaveStatus('degraded', 'Saved - recovery cleanup needs attention');
+  toast('The item was saved, but its recovery marker could not be cleared. Do not save it again; close this form and confirm discard to retry cleanup.', 'error', 10000);
+  setTimeout(() => {
+    const button = document.getElementById(buttonId);
+    if (button) { button.disabled = true; button.textContent = 'Saved - cleanup needed'; }
+  }, 0);
+}
+
+async function hasOpenFormRecoveryForUser(uid) {
+  await ensureVaultTabIdentity();
+  const owner = String(uid || '');
+  const legacyKey = legacyOpenFormRecoveryKey(owner);
+  const prefix = openFormRecoveryPrefix(owner);
+  try {
+    for (let index = 0; index < sessionStorage.length; index++) {
+      const key = sessionStorage.key(index);
+      if ((key === legacyKey || (key && key.startsWith(prefix))) && !key.endsWith(':resolved') &&
+          key !== openFormRecoveryActivePointerKey(owner) && sessionStorage.getItem(key)) return true;
+    }
+  } catch (_) { return true; }
+  if (window.CloudSync && CloudSync.storeGetAll) {
+    try {
+      const records = await CloudSync.storeGetAll('meta');
+      return records.some(record => String(record && record.uid || '') === owner &&
+        (String(record.key || '') === legacyKey || String(record.key || '').startsWith(prefix)));
+    } catch (_) { return true; }
+  }
+  return false;
+}
+
+function waitForRecoveryModalSetup() {
+  return new Promise(resolve => {
+    let complete = false;
+    const finish = () => { if (!complete) { complete = true; resolve(); } };
+    const fallback = setTimeout(finish, 120);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      clearTimeout(fallback);
+      finish();
+    }));
+  });
+}
+
+async function openRecoveredForm(snapshot) {
+  let restoredAsNew = false;
+  const id = snapshot.recordId == null ? null : String(snapshot.recordId);
+  if (snapshot.modalId === 'formModal') {
+    const exists = snapshot.mode === 'edit' && db.firearms.some(item => String(item.id) === id);
+    if (exists) openEditModal(id);
+    else { restoredAsNew = snapshot.mode === 'edit'; await openAddModal(); }
+  } else if (snapshot.modalId === 'ammoModal') {
+    const exists = snapshot.mode === 'edit' && db.ammo.some(item => String(item.id) === id);
+    if (exists) editAmmo(id);
+    else { restoredAsNew = snapshot.mode === 'edit'; openAddAmmoModal(); }
+  } else if (snapshot.modalId === 'accessoryModal') {
+    const exists = snapshot.mode === 'edit' && db.accessories.some(item => String(item.id) === id);
+    restoredAsNew = snapshot.mode === 'edit' && !exists;
+    openAccessoryModal(exists ? id : undefined);
+  } else if (snapshot.modalId === 'wishlistModal') {
+    const exists = snapshot.mode === 'edit' && db.wishlist.some(item => String(item.id) === id);
+    restoredAsNew = snapshot.mode === 'edit' && !exists;
+    openWishlistModal(exists ? id : undefined);
+  } else if (snapshot.modalId === 'dealerModal') {
+    const exists = snapshot.mode === 'edit' && db.dealers.some(item => String(item.id) === id);
+    restoredAsNew = snapshot.mode === 'edit' && !exists;
+    openDealerModal(exists ? id : undefined);
+  } else if (snapshot.modalId === 'maintenanceModal') {
+    const exists = id && db.firearms.some(item => String(item.id) === id);
+    if (!exists) return { ok: false, status: 'missing-parent' };
+    openMaintenanceModal(id);
+  } else {
+    return { ok: false, status: 'unsupported-form' };
+  }
+  await waitForRecoveryModalSetup();
+  return { ok: true, restoredAsNew };
+}
+
+function applyRecoveryControls(modal, controls) {
+  controls.forEach(saved => {
+    const control = document.getElementById(saved.id);
+    if (!control || !modal.contains(control)) return;
+    if (saved.kind === 'html' && control.isContentEditable) {
+      control.innerHTML = sanitizeRichText(String(saved.value || ''));
+    } else if (saved.kind === 'checked' && ('checked' in control)) {
+      control.checked = !!saved.value;
+    } else if (saved.kind === 'value' && 'value' in control) {
+      control.value = String(saved.value == null ? '' : saved.value);
+    }
+  });
+}
+
+async function applyRecoveryExtras(snapshot) {
+  const extras = snapshot.extras && typeof snapshot.extras === 'object' ? snapshot.extras : {};
+  if (snapshot.modalId === 'formModal') {
+    const imageData = extras.imageData && typeof extras.imageData === 'object' ? extras.imageData : {};
+    for (const [imageId, unsafeData] of Object.entries(imageData)) {
+      const dataURL = recoveryAttachment(unsafeData, 'image');
+      if (!dataURL || typeof imageId !== 'string' || imageId.length > 200) continue;
+      imagesDb[imageId] = dataURL;
+      try { await idbPut(imageId, dataURL); }
+      catch (error) { console.warn('A recovered form photo could not be cached:', error); }
+    }
+    tempImages = Array.isArray(extras.images)
+      ? extras.images.filter(id => typeof id === 'string' && !!imagesDb[id]).slice(0, 50)
+      : [];
+    _firearmDraftOwnedImages.clear();
+    (Array.isArray(extras.ownedImages) ? extras.ownedImages : []).forEach(id => {
+      if (typeof id === 'string' && id.length <= 200) _firearmDraftOwnedImages.add(id);
+    });
+    tempDocs = (Array.isArray(extras.documents) ? extras.documents : []).slice(0, 50).flatMap(item => {
+      const data = item && recoveryAttachment(item.data, 'document');
+      return data ? [{ id: String(item.id || generateId()), name: String(item.name || 'Document'), type: String(item.type || ''), data }] : [];
+    });
+    tempTags = (Array.isArray(extras.tags) ? extras.tags : []).filter(tag => typeof tag === 'string').slice(0, 100);
+    tempStampPdf = recoveryAttachment(extras.stampPdf, 'document');
+    tempStampPdfName = tempStampPdf ? String(extras.stampPdfName || 'Tax stamp.pdf') : null;
+    tempReceipts.f = recoveryAttachment(extras.receipt, 'document');
+    tempReceipts.fName = tempReceipts.f ? String(extras.receiptName || 'Receipt') : null;
+    tempCustomFields = (Array.isArray(extras.customFields) ? extras.customFields : []).slice(0, 100).map(field => ({
+      name: String(field && field.name || ''), value: String(field && field.value || '')
+    }));
+    pendingWishlistMoveId = extras.sourceWishlistId && db.wishlist.some(item => String(item.id) === String(extras.sourceWishlistId))
+      ? extras.sourceWishlistId : null;
+    currentImageIndex = Math.max(0, Math.min(Number(extras.imageIndex) || 0, Math.max(0, tempImages.length - 1)));
+    renderImageGallery();
+    renderDocList();
+    renderTagsInput();
+    renderCustomFields();
+    showStampInUploadArea(tempStampPdf, tempStampPdfName);
+    showReceiptInUploadArea('f', tempReceipts.f, tempReceipts.fName);
+    toggleNFAFields();
+    toggleDispositionFields();
+  } else if (snapshot.modalId === 'ammoModal') {
+    tempReceipts.a = recoveryAttachment(extras.receipt, 'document');
+    tempReceipts.aName = tempReceipts.a ? String(extras.receiptName || 'Receipt') : null;
+    showReceiptInUploadArea('a', tempReceipts.a, tempReceipts.aName);
+  } else if (snapshot.modalId === 'accessoryModal') {
+    tempReceipts.acc = recoveryAttachment(extras.receipt, 'document');
+    tempReceipts.accName = tempReceipts.acc ? String(extras.receiptName || 'Receipt') : null;
+    showReceiptInUploadArea('acc', tempReceipts.acc, tempReceipts.accName);
+  }
+}
+
+async function restoreOpenDirtyFormSession(uid) {
+  const owner = String(uid || '');
+  if (!owner || !window.CloudSync || String(CloudSync.uid || '') !== owner) {
+    return { restored: false, status: 'account-changed' };
+  }
+  const snapshot = await readOpenFormRecovery(owner);
+  if (!snapshot) return { restored: false, status: 'none' };
+
+  const opened = await openRecoveredForm(snapshot);
+  if (!opened.ok) {
+    toast('An unfinished form is still saved on this device, but its original record is no longer available.', 'error', 9000);
+    return { restored: false, status: opened.status };
+  }
+  const modal = document.getElementById(snapshot.modalId);
+  applyRecoveryControls(modal, snapshot.controls);
+  await applyRecoveryExtras(snapshot);
+  // Attachment/gallery rendering mutates the modal subtree and schedules the
+  // accessibility observer. Let that refresh finish before asserting dirty.
+  await waitForRecoveryModalSetup();
+  modal.dataset.dirty = 'true';
+  modal.dataset.recoveredForm = 'true';
+  modal.dataset.recoveryOwner = owner;
+  modal.dataset.recoveryKey = snapshot.recoveryKey || openFormRecoveryKey(owner);
+
+  const label = opened.restoredAsNew ? 'The original record was removed, so your unfinished changes were restored as a new item.'
+    : 'Your unfinished form was restored after the other session signed out.';
+  toast(label + (snapshot.attachmentsComplete === false ? ' An attachment may need to be added again.' : ''),
+    snapshot.attachmentsComplete === false ? 'error' : 'success', 9000);
+  setTimeout(() => {
+    const first = modal.querySelector('input:not([type="hidden"]):not([type="file"]), select, textarea, [contenteditable="true"]');
+    if (first && modal.classList.contains('open')) first.focus();
+  }, 80);
+  return { restored: true, status: 'restored', modalId: snapshot.modalId, restoredAsNew: opened.restoredAsNew, retained: true };
+}
+
+window.preserveOpenDirtyFormSession = preserveOpenDirtyFormSession;
+window.restoreOpenDirtyFormSession = restoreOpenDirtyFormSession;
+window.clearOpenFormRecoveryForUser = clearOpenFormRecoveryForUser;
+window.hasOpenFormRecoveryForUser = hasOpenFormRecoveryForUser;
+window.openFormRecoveryKey = openFormRecoveryKey;
+window.refreshRecoveredFormSession = refreshRecoveredFormSession;
+window.resolveRecoveredFormSession = resolveRecoveredFormSession;
+
+function firearmDraftOwner(uid) {
+  return String(uid || ((window.CloudSync && CloudSync.uid) || 'session'));
+}
+function legacyFirearmDraftKey(uid) { return 'fv:firearm-form-draft:' + firearmDraftOwner(uid); }
+function firearmDraftPrefix(uid) { return legacyFirearmDraftKey(uid) + ':'; }
+function firearmDraftActivePointerKey(uid) { return legacyFirearmDraftKey(uid) + ':active'; }
+function activeFirearmDraftId(uid, create) {
+  const pointerKey = firearmDraftActivePointerKey(uid);
+  try {
+    const existing = sessionStorage.getItem(pointerKey);
+    if (existing) return existing;
+  } catch (_) {}
+  if (create === false) return null;
+  const id = crypto.randomUUID ? crypto.randomUUID() : generateId();
+  try { sessionStorage.setItem(pointerKey, id); } catch (_) {}
+  return id;
+}
+function firearmDraftKey(uid, draftId) {
+  return firearmDraftPrefix(uid) + String(draftId || activeFirearmDraftId(uid, true));
+}
+function firearmDraftResolutionKey(uid, draftKey) { return String(draftKey || firearmDraftKey(uid)) + ':resolved'; }
+function readFirearmDraftResolution(uid, draftKey) {
+  try {
+    const value = JSON.parse(localStorage.getItem(firearmDraftResolutionKey(uid, draftKey)) || 'null');
+    return value && value.version === 1 && (!value.draftKey || value.draftKey === String(draftKey || firearmDraftKey(uid))) ? value : null;
+  } catch (_) { return null; }
+}
+function markFirearmDraftResolved(uid, draftSavedAt, draftKey) {
+  const targetKey = String(draftKey || firearmDraftKey(uid));
+  try {
+    localStorage.setItem(firearmDraftResolutionKey(uid, targetKey), JSON.stringify({
+      version: 1, draftKey: targetKey, resolvedAt: new Date().toISOString(), draftSavedAt: draftSavedAt || null
+    }));
+    return true;
+  } catch (_) { return false; }
+}
+function clearFirearmDraftResolution(uid, draftKey) {
+  try { localStorage.removeItem(firearmDraftResolutionKey(uid, draftKey)); } catch (_) {}
+  return !readFirearmDraftResolution(uid, draftKey);
+}
+function setFirearmDraftStatus(message) {
+  const status = document.getElementById('formDraftStatus');
+  if (status) status.textContent = message || '';
+}
+async function clearFirearmDraft(uid, options) {
+  await ensureVaultTabIdentity();
+  const opts = options || {};
+  const requiresResolution = !!(opts.committed || opts.discarded);
+  clearTimeout(_firearmDraftTimer);
+  _firearmDraftTimer = null;
+  _firearmDraftRevision++;
+  const owner = firearmDraftOwner(uid);
+  const modal = document.getElementById('formModal');
+  const activeId = activeFirearmDraftId(owner, false);
+  const key = (!uid && modal && modal.dataset.firearmDraftKey) ||
+    (activeId ? firearmDraftKey(owner, activeId) : firearmDraftKey(owner));
+  const draftImageIds = new Set();
+  const rememberImages = draft => {
+    if (draft && Array.isArray(draft.images)) draft.images.forEach(id => draftImageIds.add(id));
+    if (draft && Array.isArray(draft.ownedImages)) draft.ownedImages.forEach(id => draftImageIds.add(id));
+  };
+  let newestDraftSavedAt = null;
+  const rememberDraft = draft => {
+    rememberImages(draft);
+    if (draft && draft.savedAt && (!newestDraftSavedAt || String(draft.savedAt) > String(newestDraftSavedAt))) {
+      newestDraftSavedAt = draft.savedAt;
+    }
+  };
+  try { rememberDraft(JSON.parse(sessionStorage.getItem(key) || 'null')); } catch (_) {}
+  const activeDraftUid = (window.CloudSync && CloudSync.uid) || 'session';
+  if (!uid || String(uid) === String(activeDraftUid)) tempImages.forEach(id => draftImageIds.add(id));
+  let deviceDraftRemoved = true;
+  if (window.CloudSync && CloudSync.storeGet) {
+    try {
+      const stored = await CloudSync.storeGet('meta', key);
+      rememberDraft(stored && stored.value);
+    } catch (error) { console.warn('Draft image index could not be read:', error); }
+  }
+  const resolutionSafe = requiresResolution ? markFirearmDraftResolved(owner, newestDraftSavedAt, key) : false;
+  try { sessionStorage.removeItem(key); } catch (_) { deviceDraftRemoved = false; }
+  try { if (window.CloudSync && CloudSync.storeDelete) await CloudSync.storeDelete('meta', key); }
+  catch (error) { deviceDraftRemoved = false; console.warn('Draft cleanup failed:', error); }
+  if (deviceDraftRemoved) {
+    _firearmDraftOwnedImages.forEach(id => draftImageIds.add(id));
+    await removeUnreferencedDraftImages(draftImageIds);
+    _firearmDraftOwnedImages.clear();
+    if (requiresResolution) clearFirearmDraftResolution(owner, key);
+    try {
+      if (activeFirearmDraftId(owner, false) && firearmDraftKey(owner, activeFirearmDraftId(owner, false)) === key) {
+        sessionStorage.removeItem(firearmDraftActivePointerKey(owner));
+      }
+    } catch (_) {}
+    if (modal && modal.dataset.firearmDraftKey === key) delete modal.dataset.firearmDraftKey;
+  }
+  if (!requiresResolution) clearFirearmDraftResolution(owner, key);
+  setFirearmDraftStatus('');
+  return deviceDraftRemoved || resolutionSafe;
+}
+
+async function clearAllFirearmDraftsForUser(uid) {
+  await ensureVaultTabIdentity();
+  const owner = firearmDraftOwner(uid);
+  const legacyKey = legacyFirearmDraftKey(owner);
+  const prefix = firearmDraftPrefix(owner);
+  const keys = new Set([legacyKey]);
+  const imageIds = new Set();
+  const remember = draft => {
+    if (!draft) return;
+    (draft.images || []).forEach(id => imageIds.add(id));
+    (draft.ownedImages || []).forEach(id => imageIds.add(id));
+  };
+  try {
+    for (let index = 0; index < sessionStorage.length; index++) {
+      const key = sessionStorage.key(index);
+      if (key === legacyKey || (key && key.startsWith(prefix) && !key.endsWith(':resolved') && key !== firearmDraftActivePointerKey(owner))) {
+        keys.add(key);
+        try { remember(JSON.parse(sessionStorage.getItem(key) || 'null')); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  const activeId = activeFirearmDraftId(owner, false);
+  const currentKey = activeId ? firearmDraftKey(owner, activeId) : firearmDraftKey(owner);
+  keys.add(currentKey);
+  if (window.CloudSync && CloudSync.storeGet) {
+    try {
+      const current = await CloudSync.storeGet('meta', currentKey);
+      remember(current && current.value);
+    } catch (_) {}
+  }
+  if (window.CloudSync && CloudSync.storeGetAll) {
+    const records = await CloudSync.storeGetAll('meta');
+    records.forEach(record => {
+      const key = String(record && record.key || '');
+      if (String(record && record.uid || '') === owner && (key === legacyKey || key.startsWith(prefix))) {
+        keys.add(key);
+        remember(record.value);
+      }
+    });
+  }
+  const failures = [];
+  for (const key of keys) {
+    try { sessionStorage.removeItem(key); } catch (error) { failures.push(error); }
+    try { if (window.CloudSync && CloudSync.storeDelete) await CloudSync.storeDelete('meta', key); }
+    catch (error) { failures.push(error); }
+    clearFirearmDraftResolution(owner, key);
+  }
+  try { sessionStorage.removeItem(firearmDraftActivePointerKey(owner)); } catch (error) { failures.push(error); }
+  try {
+    const markerKeys = [];
+    for (let index = 0; index < localStorage.length; index++) markerKeys.push(localStorage.key(index));
+    markerKeys.filter(key => key && (key === legacyKey + ':resolved' ||
+      (key.startsWith(prefix) && key.endsWith(':resolved')))).forEach(key => localStorage.removeItem(key));
+  } catch (error) { failures.push(error); }
+  _firearmDraftOwnedImages.forEach(id => imageIds.add(id));
+  await removeUnreferencedDraftImages(imageIds);
+  _firearmDraftOwnedImages.clear();
+  setFirearmDraftStatus('');
+  if (failures.length) throw failures[0];
+  return true;
+}
+function collectFirearmDraft() {
+  const values = {};
+  FIREARM_DRAFT_FIELDS.forEach(id => {
+    const control = document.getElementById(id);
+    if (control) values[id] = control.type === 'checkbox' ? control.checked : control.value;
+  });
+  values.fNotes = document.getElementById('fNotes').innerHTML;
+  values.fDispNotes = document.getElementById('fDispNotes').innerHTML;
+  const ownedImages = [...new Set([..._firearmDraftOwnedImages, ...tempImages])];
+  return {
+    savedAt: new Date().toISOString(), values,
+    tabId: vaultTabId(),
+    draftKey: document.getElementById('formModal').dataset.firearmDraftKey || firearmDraftKey(),
+    images: [...tempImages],
+    ownedImages,
+    imageData: Object.fromEntries(ownedImages
+      .filter(id => typeof imagesDb[id] === 'string')
+      .map(id => [id, imagesDb[id]])),
+    documents: tempDocs.map(d => ({ id: d.id, name: d.name, type: d.type, data: d.data })),
+    tags: [...tempTags],
+    stampPdf: tempStampPdf,
+    stampPdfName: tempStampPdfName,
+    receipt: tempReceipts.f,
+    receiptName: tempReceipts.fName,
+    customFields: tempCustomFields.map(field => ({ name: field.name || '', value: field.value || '' })),
+    imageIndex: currentImageIndex,
+    sourceWishlistId: pendingWishlistMoveId
+  };
+}
+function writeFirearmDraftFallback(draft, key) {
+  sessionStorage.setItem(key || draft.draftKey || firearmDraftKey(), JSON.stringify({
+    savedAt: draft.savedAt,
+    tabId: draft.tabId,
+    draftKey: key || draft.draftKey,
+    values: draft.values,
+    images: draft.images,
+    ownedImages: draft.ownedImages,
+    tags: draft.tags,
+    customFields: draft.customFields,
+    imageIndex: draft.imageIndex,
+    sourceWishlistId: draft.sourceWishlistId
+  }));
+}
+async function writeFirearmDraft(revision = _firearmDraftRevision) {
+  await ensureVaultTabIdentity();
+  const modal = document.getElementById('formModal');
+  if (editingId !== null || !modal.classList.contains('open') || modal.dataset.draftSaveCommitted === 'true') return true;
+  const draft = collectFirearmDraft();
+  const key = modal.dataset.firearmDraftKey || draft.draftKey || firearmDraftKey();
+  modal.dataset.firearmDraftKey = key;
+  draft.draftKey = key;
+  let fallbackSafe = false;
+  try { writeFirearmDraftFallback(draft, key); fallbackSafe = true; } catch (_) {}
+  try {
+    if (!window.CloudSync || !CloudSync.storePut) throw new Error('Device draft storage is not ready.');
+    await CloudSync.storePut('meta', { key, uid: CloudSync.uid || 'session', value: draft, updatedAt: draft.savedAt });
+    if (revision === _firearmDraftRevision) {
+      modal.dataset.dirty = 'false';
+      setFirearmDraftStatus('Draft saved on this device');
+    }
+    return true;
+  } catch (error) {
+    if (revision === _firearmDraftRevision) {
+      modal.dataset.dirty = 'true';
+      setFirearmDraftStatus(fallbackSafe ? 'Text draft saved; attachments are not protected' : 'Draft could not be saved');
+    }
+    console.warn('Firearm draft save failed:', error);
+    return false;
+  }
+}
+function saveFirearmDraftSoon() {
+  const modal = document.getElementById('formModal');
+  if (!modal.classList.contains('open')) return;
+  modal.dataset.dirty = 'true';
+  saveRecoveredFormSoon('formModal');
+  if (editingId !== null) return;
+  clearTimeout(_firearmDraftTimer);
+  const revision = ++_firearmDraftRevision;
+  setFirearmDraftStatus('Saving draft on this device…');
+  _firearmDraftTimer = setTimeout(() => {
+    _firearmDraftTimer = null;
+    void writeFirearmDraft(revision);
+  }, 350);
+}
+async function flushFirearmDraft() {
+  const operationsSafe = await flushPendingVaultOperations();
+  if (!operationsSafe) {
+    setFirearmDraftStatus('An attachment could not be saved');
+    return false;
+  }
+  if (editingId !== null || !document.getElementById('formModal').classList.contains('open')) return true;
+  clearTimeout(_firearmDraftTimer);
+  _firearmDraftTimer = null;
+  const revision = ++_firearmDraftRevision;
+  return writeFirearmDraft(revision);
+}
+async function restoreFirearmDraft() {
+  await ensureVaultTabIdentity();
+  const owner = firearmDraftOwner();
+  const activeId = activeFirearmDraftId(owner, false);
+  const activeKey = activeId ? firearmDraftKey(owner, activeId) : null;
+  const legacyKey = legacyFirearmDraftKey(owner);
+  const candidates = [];
+  const addDraft = (key, value, priority) => {
+    if (value && value.values && typeof value.values === 'object') candidates.push({ key, value, priority });
+  };
+  if (activeKey) {
+    try {
+      if (window.CloudSync && CloudSync.storeGet) {
+        const stored = await CloudSync.storeGet('meta', activeKey);
+        addDraft(activeKey, stored && String(stored.uid || '') === owner ? stored.value : null, 400);
+      }
+    } catch (_) {}
+    try { addDraft(activeKey, JSON.parse(sessionStorage.getItem(activeKey) || 'null'), 400); } catch (_) {}
+  }
+  try {
+    if (window.CloudSync && CloudSync.storeGet) {
+      const stored = await CloudSync.storeGet('meta', legacyKey);
+      addDraft(legacyKey, stored && String(stored.uid || '') === owner ? stored.value : null, 250);
+    }
+  } catch (_) {}
+  try { addDraft(legacyKey, JSON.parse(sessionStorage.getItem(legacyKey) || 'null'), 250); } catch (_) {}
+  if (window.CloudSync && CloudSync.storeGetAll) {
+    try {
+      const storedDrafts = await CloudSync.storeGetAll('meta');
+      storedDrafts.forEach(stored => {
+        if (stored && String(stored.uid || '') === owner && String(stored.key || '').startsWith(firearmDraftPrefix(owner))) {
+          if (stored.value && stored.value.tabId && stored.value.tabId !== vaultTabId()) return;
+          addDraft(String(stored.key), stored.value, 100);
+        }
+      });
+    } catch (_) {}
+  }
+  candidates.sort((a, b) => b.priority - a.priority ||
+    String(b.value.savedAt || '').localeCompare(String(a.value.savedAt || '')));
+  const selected = candidates[0] || null;
+  let draft = selected && selected.value;
+  const selectedKey = selected && selected.key;
+  const resolution = selectedKey ? readFirearmDraftResolution(owner, selectedKey) : null;
+  if (resolution) {
+    const draftIsNewer = !!(draft && draft.savedAt && String(draft.savedAt) > String(resolution.resolvedAt || ''));
+    if (!draftIsNewer) {
+      try { sessionStorage.removeItem(selectedKey); } catch (_) {}
+      try { if (window.CloudSync && CloudSync.storeDelete) await CloudSync.storeDelete('meta', selectedKey); }
+      catch (_) { setFirearmDraftStatus('Saved draft cleanup will retry later'); return; }
+      try {
+        const pointerId = activeFirearmDraftId(owner, false);
+        if (pointerId && firearmDraftKey(owner, pointerId) === selectedKey) sessionStorage.removeItem(firearmDraftActivePointerKey(owner));
+      } catch (_) {}
+      clearFirearmDraftResolution(owner, selectedKey);
+      setFirearmDraftStatus('');
+      return;
+    }
+    clearFirearmDraftResolution(owner, selectedKey);
+  }
+  if (!draft || !draft.values) {
+    document.getElementById('formModal').dataset.firearmDraftKey = firearmDraftKey(owner);
+    setFirearmDraftStatus('');
+    return;
+  }
+  if (selectedKey && selectedKey.startsWith(firearmDraftPrefix(owner))) {
+    const id = selectedKey.slice(firearmDraftPrefix(owner).length);
+    try { sessionStorage.setItem(firearmDraftActivePointerKey(owner), id); } catch (_) {}
+  }
+  document.getElementById('formModal').dataset.firearmDraftKey = selectedKey || firearmDraftKey(owner);
+  const restoredImageData = draft.imageData && typeof draft.imageData === 'object' ? draft.imageData : {};
+  for (const [id, dataURL] of Object.entries(restoredImageData)) {
+    if (typeof dataURL !== 'string' || !dataURL.startsWith('data:')) continue;
+    imagesDb[id] = dataURL;
+    try { await idbPut(id, dataURL); }
+    catch (error) { console.warn('Draft photo could not be restored to the device cache:', error); }
+  }
+  FIREARM_DRAFT_FIELDS.forEach(id => {
+    const control = document.getElementById(id);
+    if (!control || draft.values[id] === undefined) return;
+    if (control.type === 'checkbox') control.checked = !!draft.values[id];
+    else control.value = draft.values[id];
+  });
+  document.getElementById('fNotes').innerHTML = sanitizeRichText(draft.values.fNotes || '');
+  document.getElementById('fDispNotes').innerHTML = sanitizeRichText(draft.values.fDispNotes || '');
+  tempImages = Array.isArray(draft.images) ? draft.images.filter(id => imagesDb[id]) : [];
+  _firearmDraftOwnedImages.clear();
+  (Array.isArray(draft.ownedImages) ? draft.ownedImages : draft.images || []).forEach(id => _firearmDraftOwnedImages.add(id));
+  tempDocs = Array.isArray(draft.documents) ? draft.documents.map(d => ({ id: d.id, name: d.name, type: d.type, data: d.data })) : [];
+  tempTags = Array.isArray(draft.tags) ? [...draft.tags] : [];
+  tempStampPdf = draft.stampPdf || null;
+  tempStampPdfName = draft.stampPdfName || null;
+  tempReceipts.f = draft.receipt || null;
+  tempReceipts.fName = draft.receiptName || null;
+  tempCustomFields = Array.isArray(draft.customFields) ? draft.customFields.map(field => ({ name: field.name || '', value: field.value || '' })) : [];
+  pendingWishlistMoveId = draft.sourceWishlistId || null;
+  currentImageIndex = Math.max(0, Math.min(Number(draft.imageIndex) || 0, Math.max(0, tempImages.length - 1)));
+  renderImageGallery();
+  renderDocList();
+  renderTagsInput();
+  renderCustomFields();
+  showStampInUploadArea(tempStampPdf, tempStampPdfName);
+  showReceiptInUploadArea('f', tempReceipts.f, tempReceipts.fName);
+  toggleNFAFields();
+  toggleDispositionFields();
+  setFirearmDraftStatus('Unsaved draft restored');
+}
+window.flushFirearmDraft = flushFirearmDraft;
+window.clearFirearmDraftForUser = clearAllFirearmDraftsForUser;
+window.addEventListener('pagehide', () => {
+  const modal = document.getElementById('formModal');
+  if (editingId !== null || !modal.classList.contains('open') || modal.dataset.draftSaveCommitted === 'true') return;
+  clearTimeout(_firearmDraftTimer);
+  _firearmDraftTimer = null;
+  _firearmDraftRevision++;
+  const draft = collectFirearmDraft();
+  const key = modal.dataset.firearmDraftKey || draft.draftKey || firearmDraftKey();
+  modal.dataset.firearmDraftKey = key;
+  draft.draftKey = key;
+  try { writeFirearmDraftFallback(draft, key); } catch (_) {}
+  if (window.CloudSync && CloudSync.storePut) {
+    void CloudSync.storePut('meta', { key, uid: CloudSync.uid || 'session', value: draft, updatedAt: draft.savedAt }).catch(() => {});
+  }
+});
+document.getElementById('formModal').addEventListener('input', saveFirearmDraftSoon);
+document.getElementById('formModal').addEventListener('change', saveFirearmDraftSoon);
+
 function clearForm() {
+  pendingWishlistMoveId = null;
   ['fMake','fModel','fSerial','fCaliber','fBarrel','fDateAcquired','fPrice','fDateSubmitted','fDateApproved','fDispDate','fDispBuyer','fDispPrice','fDispFFL'].forEach(id => document.getElementById(id).value='');
   document.getElementById('fNotes').innerHTML='';
   document.getElementById('fDispNotes').innerHTML='';
@@ -1951,6 +3979,7 @@ function clearForm() {
   toggleNFAFields();
   toggleDispositionFields();
   tempImages=[];
+  _firearmDraftOwnedImages.clear();
   tempDocs=[]; renderDocList();
   tempTags=[];
   tempStampPdf=null;
@@ -2014,9 +4043,7 @@ function populateForm(f) {
 
   renderImageGallery();
   renderTagsInput();
-  const sa=document.getElementById('stampUploadArea');
-  if(f.stampPdf) sa.innerHTML=`<span style="font-size:1.5rem;">&#128196;</span><span class="upload-text" style="color:var(--text);font-weight:600;">${esc(f.stampPdfName||'tax_stamp.pdf')}</span><button class="remove-img" onclick="event.stopPropagation();removeStampPdf()">&times;</button>`;
-  else resetStampUpload();
+  showStampInUploadArea(f.stampPdf, f.stampPdfName);
 
   tempReceipts.f = f.receipt || null;
   tempReceipts.fName = f.receiptName || null;
@@ -2032,94 +4059,148 @@ function toggleDispositionFields() {
 
 document.getElementById('fStatus').addEventListener('change', toggleDispositionFields);
 
-async function saveFirearm() {
-  const make=document.getElementById('fMake').value.trim();
-  const model=document.getElementById('fModel').value.trim();
-  if(!make&&!model){showFieldError(document.getElementById('fMake'), 'Enter at least a manufacturer or model.');return;}
-
-  const isNFA=document.getElementById('fIsNFA').checked;
+function collectFirearmFormRecord(id) {
+  const isNFA = document.getElementById('fIsNFA').checked;
   const status = document.getElementById('fStatus').value;
-  const oldData = editingId ? db.firearms.find(f => f.id === editingId) : null;
-
-  const data = {
-    id:editingId||generateId(),
-    make, model,
-    serial:document.getElementById('fSerial').value.trim(),
-    caliber:document.getElementById('fCaliber').value.trim(),
-    type:document.getElementById('fType').value,
-    barrel:document.getElementById('fBarrel').value.trim(),
-    dateAcquired:document.getElementById('fDateAcquired').value,
-    price:document.getElementById('fPrice').value,
-    condition:document.getElementById('fCondition').value,
-    notes:rteValue('fNotes'),
-    images: tempImages,
-    tags: tempTags,
+  return {
+    id,
+    make: document.getElementById('fMake').value.trim(),
+    model: document.getElementById('fModel').value.trim(),
+    serial: document.getElementById('fSerial').value.trim(),
+    caliber: document.getElementById('fCaliber').value.trim(),
+    type: document.getElementById('fType').value,
+    barrel: document.getElementById('fBarrel').value.trim(),
+    dateAcquired: document.getElementById('fDateAcquired').value,
+    price: document.getElementById('fPrice').value,
+    condition: document.getElementById('fCondition').value,
+    notes: rteValue('fNotes'),
+    images: [...tempImages],
+    tags: [...tempTags],
     isNFA,
-    nfaType:isNFA?document.getElementById('fNFAType').value:null,
-    formType:isNFA?document.getElementById('fFormType').value:null,
-    dateSubmitted:isNFA?document.getElementById('fDateSubmitted').value:null,
-    dateApproved:isNFA?document.getElementById('fDateApproved').value:null,
-    stampStatus:isNFA?document.getElementById('fStampStatus').value:null,
-    regType:isNFA?document.getElementById('fRegType').value:null,
-    stampPdf:isNFA?tempStampPdf:null,
-    stampPdfName:isNFA?tempStampPdfName:null,
-    status: status,
+    nfaType: isNFA ? document.getElementById('fNFAType').value : null,
+    formType: isNFA ? document.getElementById('fFormType').value : null,
+    dateSubmitted: isNFA ? document.getElementById('fDateSubmitted').value : null,
+    dateApproved: isNFA ? document.getElementById('fDateApproved').value : null,
+    stampStatus: isNFA ? document.getElementById('fStampStatus').value : null,
+    regType: isNFA ? document.getElementById('fRegType').value : null,
+    stampPdf: isNFA ? tempStampPdf : null,
+    stampPdfName: isNFA ? tempStampPdfName : null,
+    status,
     dispDate: status !== 'Active' ? document.getElementById('fDispDate').value : null,
     dispBuyer: status !== 'Active' ? document.getElementById('fDispBuyer').value.trim() : null,
     dispPrice: status !== 'Active' ? document.getElementById('fDispPrice').value : null,
     dispFFL: status !== 'Active' ? document.getElementById('fDispFFL').value.trim() : null,
     dispNotes: status !== 'Active' ? rteValue('fDispNotes') : null,
-    maintenanceLog: editingId ? (oldData?.maintenanceLog || []) : [],
     receipt: tempReceipts.f,
     receiptName: tempReceipts.fName,
     documents: tempDocs.map(d => ({ id: d.id, name: d.name, type: d.type, data: d.data })),
     roundCount: parseInt(document.getElementById('fRoundCount').value) || 0,
     warrantyExp: document.getElementById('fWarrantyExp').value || null,
-    customFields: tempCustomFields.filter(cf => cf.name && cf.value)
+    customFields: tempCustomFields.filter(cf => cf.name && cf.value).map(cf => ({ name: cf.name, value: cf.value }))
   };
+}
 
-  // Audit trail
-  const itemName = (make + ' ' + model).trim();
-  if (editingId) {
-    // Detect changed fields
-    const changes = [];
-    if (oldData) {
-      ['make','model','serial','caliber','type','barrel','price','condition','status'].forEach(k => {
-        if (String(data[k]||'') !== String(oldData[k]||'')) changes.push(k);
-      });
+async function saveFirearm() {
+  return withFormSaveLock('firearm', 'saveBtn', async () => {
+    if (!await waitForFormAttachments('formModal', 'Firearm attachment')) return false;
+    const make=document.getElementById('fMake').value.trim();
+    const model=document.getElementById('fModel').value.trim();
+    if(!make&&!model){showFieldError(document.getElementById('fMake'), 'Enter at least a manufacturer or model.');return false;}
+
+    let data = collectFirearmFormRecord(editingId || generateId());
+    let editResult = null;
+    if (editingId) {
+      editResult = await mergeRecordEdit('firearms', editingId, data);
+      if (editResult.cancelled) return false;
+      data = editResult.record;
+    } else {
+      data.maintenanceLog = [];
     }
-    addAuditEntry('edit', 'firearm', itemName, changes.length > 0 ? 'Changed: ' + changes.join(', ') : 'Updated');
-    const i=db.firearms.findIndex(f=>f.id===editingId);
-    if(i>-1) db.firearms[i]=data;
-  } else {
-    addAuditEntry('create', 'firearm', itemName, '');
-    db.firearms.push(data);
-  }
 
-  await saveData();
-  render();
-  closeModal();
+    // Capture the rollback point only after any conflict dialog has resolved;
+    // cloud updates may have arrived while that dialog was open.
+    const previousDatabase = structuredClone(db);
+    const itemName = ((data.make || '') + ' ' + (data.model || '')).trim();
+    if (editingId) {
+      const changes = editResult.localFields || [];
+      addAuditEntry('edit', 'firearm', itemName, changes.length > 0 ? 'Changed: ' + changes.join(', ') : 'Updated');
+      const i=db.firearms.findIndex(f=>f.id===editingId);
+      if(i>-1) db.firearms[i]=data; else db.firearms.push(data);
+    } else {
+      addAuditEntry('create', 'firearm', itemName, '');
+      db.firearms.push(data);
+      if (pendingWishlistMoveId) {
+        const source = db.wishlist.find(item => item.id === pendingWishlistMoveId);
+        db.wishlist = db.wishlist.filter(item => item.id !== pendingWishlistMoveId);
+        if (source) addAuditEntry('delete', 'wishlist', ((source.make || '') + ' ' + (source.model || '')).trim(), 'Moved to collection');
+      }
+    }
+
+    const wasEditing = editingId !== null;
+    const attemptedDatabase = structuredClone(db);
+    const persisted = await saveData();
+    if (!persisted) {
+      await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'formModal', 'Firearm');
+      if (editingId === null) saveFirearmDraftSoon();
+      return false;
+    }
+    render();
+    if (wasEditing) {
+      const editOnlyImages = [..._firearmDraftOwnedImages];
+      _firearmDraftOwnedImages.clear();
+      await removeUnreferencedDraftImages(editOnlyImages);
+    } else {
+      const draftCleared = await clearFirearmDraft(undefined, { committed: true });
+      if (!draftCleared) {
+        const modal = document.getElementById('formModal');
+        modal.dataset.draftSaveCommitted = 'true';
+        modal.dataset.dirty = 'true';
+        holdCommittedRecoveredForm('formModal', 'saveBtn');
+        return true;
+      }
+    }
+    if (!await resolveRecoveredFormSession('formModal')) { holdCommittedRecoveredForm('formModal', 'saveBtn'); return true; }
+    closeModal();
+    if (editResult && editResult.conflicts.length) toast('Firearm saved with your field-by-field conflict choices.', 'success', 6000);
+    return true;
+  });
 }
 
 // =====================================================
 // IMAGE HANDLING
 // =====================================================
+function queueFirearmImage(file) {
+  const session = captureAttachmentSession('formModal');
+  return trackPendingVaultOperation((async () => {
+    const source = await readFileAsDataURL(file);
+    requireAttachmentSession(session);
+    const id = generateId();
+    const compressed = await compressImage(source, 1600, 0.80);
+    requireAttachmentSession(session);
+    imagesDb[id] = compressed;
+    await idbPut(id, compressed);
+    if (!attachmentSessionActive(session)) {
+      delete imagesDb[id];
+      try { await idbDelete(id); } catch (_) {}
+      requireAttachmentSession(session);
+    }
+    tempImages.push(id);
+    _firearmDraftOwnedImages.add(id);
+    renderImageGallery();
+    saveFirearmDraftSoon();
+    return id;
+  })()).catch(error => {
+    if (error && error.code === 'STALE_ATTACHMENT_SESSION') return null;
+    toast('Photo could not be added: ' + (error.message || error), 'error', 7000);
+    throw error;
+  });
+}
+
 function handleImageUpload(e) {
   const files = e.target.files;
   if(!files) return;
   for(let i = 0; i < files.length; i++) {
-    const f = files[i];
-    const r = new FileReader();
-    r.onload = async (ev) => {
-      const id = generateId();
-      // Compress image to max 1600px width, 80% JPEG quality
-      const compressed = await compressImage(ev.target.result, 1600, 0.80);
-      imagesDb[id] = compressed;
-      await idbPut(id, compressed);
-      tempImages.push(id);
-      renderImageGallery();
-    };
-    r.readAsDataURL(f);
+    void queueFirearmImage(files[i]).catch(() => {});
   }
   e.target.value = '';
 }
@@ -2130,9 +4211,9 @@ function renderImageGallery() {
     const src = imagesDb[imgId];
     if (!src) return '';
     return `<div style="position:relative;width:60px;height:60px;">
-      <img src="${src}" class="img-thumbnail ${idx===0?'active':''}" onclick="currentImageIndex=${idx}; renderImageGallery()">
-      <button class="remove-thumbnail" style="display:flex;" onclick="event.stopPropagation(); removeImage(${idx})">&#215;</button>
-      <button style="position:absolute;bottom:0;left:0;background:var(--accent);color:#fff;border:none;font-size:0.55rem;padding:1px 4px;border-radius:2px;cursor:pointer;" onclick="event.stopPropagation();openCropModal('${imgId}')">Edit</button>
+      <button type="button" class="img-thumbnail-button" aria-label="Select photo ${idx + 1} of ${tempImages.length}" onclick="currentImageIndex=${idx}; renderImageGallery()"><img src="${src}" alt="" class="img-thumbnail ${idx===0?'active':''}"></button>
+      <button type="button" class="remove-thumbnail" style="display:flex;" aria-label="Remove photo ${idx + 1}" onclick="event.stopPropagation(); removeImage(${idx})">&#215;</button>
+      <button type="button" aria-label="Edit photo ${idx + 1}" style="position:absolute;bottom:0;left:0;background:var(--accent);color:#fff;border:none;font-size:0.55rem;padding:1px 4px;border-radius:2px;cursor:pointer;" onclick="event.stopPropagation();openCropModal('${imgId}')">Edit</button>
     </div>`;
   }).join('');
 }
@@ -2146,52 +4227,80 @@ window.adjustVaultGalleryIndex = function adjustVaultGalleryIndex(delta) {
   currentImageIndex = Math.max(0, currentImageIndex + (Number(delta) || 0));
 };
 
-function removeImage(idx) { tempImages.splice(idx, 1); currentImageIndex = 0; renderImageGallery(); }
+function removeImage(idx) { tempImages.splice(idx, 1); currentImageIndex = 0; renderImageGallery(); saveFirearmDraftSoon(); }
 function resetImgUpload() { document.getElementById('imgUploadArea').innerHTML='<span class="upload-text">Click to upload images (or drag &amp; drop)</span>'; }
 
 function handleStampUpload(e) {
   const f=e.target.files[0]; if(!f) return;
-  const r=new FileReader();
-  r.onload=(ev)=>{
-    tempStampPdf=ev.target.result; tempStampPdfName=f.name;
-    document.getElementById('stampUploadArea').innerHTML=`<span style="font-size:1.5rem;">&#128196;</span><span class="upload-text" style="color:var(--text);font-weight:600;">${esc(f.name)}</span><button class="remove-img" onclick="event.stopPropagation();removeStampPdf()">&times;</button>`;
-  };
-  r.readAsDataURL(f); e.target.value='';
+  const session = captureAttachmentSession('formModal');
+  void trackPendingVaultOperation((async () => {
+    const data = await readFileAsDataURL(f);
+    requireAttachmentSession(session);
+    tempStampPdf=data; tempStampPdfName=f.name;
+    showStampInUploadArea(tempStampPdf, tempStampPdfName);
+    saveFirearmDraftSoon();
+  })()).catch(error => { if (!error || error.code !== 'STALE_ATTACHMENT_SESSION') toast('Tax stamp could not be added: ' + (error.message || error), 'error'); });
+  e.target.value='';
 }
 
-function removeStampPdf() { tempStampPdf=null; tempStampPdfName=null; resetStampUpload(); }
-function resetStampUpload() { document.getElementById('stampUploadArea').innerHTML='<span class="upload-text">Click to upload approved tax stamp PDF</span>'; }
+function removeStampPdf() { tempStampPdf=null; tempStampPdfName=null; resetStampUpload(); saveFirearmDraftSoon(); }
+function resetStampUpload() {
+  document.getElementById('stampUploadArea').innerHTML='<span class="upload-text">Click to upload approved tax stamp PDF</span>';
+  const remove = document.getElementById('stampRemove'); if (remove) remove.hidden = true;
+}
+function showStampInUploadArea(data, name) {
+  if (!data) { resetStampUpload(); return; }
+  document.getElementById('stampUploadArea').innerHTML=`<span style="font-size:1.5rem;">&#128196;</span><span class="upload-text" style="color:var(--text);font-weight:600;">${esc(name || 'tax_stamp.pdf')}</span>`;
+  const remove = document.getElementById('stampRemove'); if (remove) remove.hidden = false;
+}
 
 function handleReceiptUpload(e, prefix) {
   const f = e.target.files[0]; if (!f) return;
-  const r = new FileReader();
-  r.onload = (ev) => {
-    tempReceipts[prefix] = ev.target.result;
+  const modalId = prefix === 'f' ? 'formModal' : prefix === 'a' ? 'ammoModal' : 'accessoryModal';
+  const session = captureAttachmentSession(modalId);
+  void trackPendingVaultOperation((async () => {
+    const data = await readFileAsDataURL(f);
+    requireAttachmentSession(session);
+    tempReceipts[prefix] = data;
     tempReceipts[prefix + 'Name'] = f.name;
-    const icon = f.type === 'application/pdf' ? '&#128196;' : '&#129534;';
-    document.getElementById(prefix + 'ReceiptUploadArea').innerHTML = `${icon} <span class="upload-text" style="color:var(--text);font-weight:600;">${esc(f.name)}</span><button class="remove-img" onclick="event.stopPropagation();removeReceipt('${prefix}')">&times;</button>`;
-  };
-  r.readAsDataURL(f); e.target.value = '';
+    showReceiptInUploadArea(prefix, tempReceipts[prefix], f.name);
+    if (prefix === 'f') saveFirearmDraftSoon();
+    else markModalDirty(modalId);
+  })()).catch(error => { if (!error || error.code !== 'STALE_ATTACHMENT_SESSION') toast('Receipt could not be added: ' + (error.message || error), 'error'); });
+  e.target.value = '';
 }
 
-function removeReceipt(prefix) { tempReceipts[prefix] = null; tempReceipts[prefix + 'Name'] = null; resetReceiptUpload(prefix); }
+function markModalDirty(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal && modal.classList.contains('open')) {
+    modal.dataset.dirty = 'true';
+    saveRecoveredFormSoon(modalId);
+  }
+}
+function removeReceipt(prefix) {
+  tempReceipts[prefix] = null;
+  tempReceipts[prefix + 'Name'] = null;
+  resetReceiptUpload(prefix);
+  if (prefix === 'f') saveFirearmDraftSoon();
+  else markModalDirty(prefix === 'a' ? 'ammoModal' : 'accessoryModal');
+}
 
 // ---- Documents (multiple per firearm) ----
 function handleDocUpload(e) {
   const files = Array.from(e.target.files || []);
-  let pending = files.length;
   files.forEach(file => {
-    const r = new FileReader();
-    r.onload = (ev) => {
-      tempDocs.push({ id: generateId(), name: file.name, type: file.type, data: ev.target.result });
-      if (--pending <= 0) renderDocList();
-      else renderDocList();
-    };
-    r.readAsDataURL(file);
+    const session = captureAttachmentSession('formModal');
+    void trackPendingVaultOperation((async () => {
+      const data = await readFileAsDataURL(file);
+      requireAttachmentSession(session);
+      tempDocs.push({ id: generateId(), name: file.name, type: file.type, data });
+      renderDocList();
+      saveFirearmDraftSoon();
+    })()).catch(error => { if (!error || error.code !== 'STALE_ATTACHMENT_SESSION') toast('Document could not be added: ' + (error.message || error), 'error'); });
   });
   e.target.value = '';
 }
-function removeDoc(id) { tempDocs = tempDocs.filter(d => d.id !== id); renderDocList(); }
+function removeDoc(id) { tempDocs = tempDocs.filter(d => d.id !== id); renderDocList(); saveFirearmDraftSoon(); }
 function renderDocList() {
   const el = document.getElementById('docList');
   if (!el) return;
@@ -2200,14 +4309,18 @@ function renderDocList() {
     const isPdf = (d.name || '').toLowerCase().endsWith('.pdf') || d.type === 'application/pdf';
     return `<div class="doc-chip"><span class="doc-chip-icon">${isPdf ? '&#128196;' : '&#129534;'}</span>
       <span class="doc-chip-name">${esc(d.name || 'document')}</span>
-      <button type="button" class="doc-chip-x" onclick="removeDoc('${d.id}')" title="Remove">&times;</button></div>`;
+      <button type="button" class="doc-chip-x" onclick="removeDoc('${d.id}')" aria-label="Remove ${escAttr(d.name || 'document')}">&times;</button></div>`;
   }).join('');
 }
-function resetReceiptUpload(prefix) { document.getElementById(prefix + 'ReceiptUploadArea').innerHTML = '<span class="upload-text">Click to upload receipt</span>'; }
+function resetReceiptUpload(prefix) {
+  document.getElementById(prefix + 'ReceiptUploadArea').innerHTML = '<span class="upload-text">Click to upload receipt</span>';
+  const remove = document.getElementById(prefix + 'ReceiptRemove'); if (remove) remove.hidden = true;
+}
 function showReceiptInUploadArea(prefix, data, name) {
   if (!data) { resetReceiptUpload(prefix); return; }
   const icon = (name && name.toLowerCase().endsWith('.pdf')) ? '&#128196;' : '&#129534;';
-  document.getElementById(prefix + 'ReceiptUploadArea').innerHTML = `${icon} <span class="upload-text" style="color:var(--text);font-weight:600;">${esc(name || 'receipt')}</span><button class="remove-img" onclick="event.stopPropagation();removeReceipt('${prefix}')">&times;</button>`;
+  document.getElementById(prefix + 'ReceiptUploadArea').innerHTML = `${icon} <span class="upload-text" style="color:var(--text);font-weight:600;">${esc(name || 'receipt')}</span>`;
+  const remove = document.getElementById(prefix + 'ReceiptRemove'); if (remove) remove.hidden = false;
 }
 
 // Drag and drop
@@ -2219,9 +4332,7 @@ imgArea.addEventListener('drop',e=>{
   const files = e.dataTransfer.files; if(!files) return;
   for(let i = 0; i < files.length; i++) {
     const f = files[i]; if(!f.type.startsWith('image/')) continue;
-    const r = new FileReader();
-    r.onload = async (ev) => { const id = generateId(); const compressed = await compressImage(ev.target.result, 1600, 0.80); imagesDb[id] = compressed; await idbPut(id, compressed); tempImages.push(id); renderImageGallery(); };
-    r.readAsDataURL(f);
+    void queueFirearmImage(f).catch(() => {});
   }
 });
 
@@ -2231,9 +4342,13 @@ stampArea.addEventListener('dragleave',()=>{stampArea.style.borderColor='';});
 stampArea.addEventListener('drop',e=>{
   e.preventDefault();stampArea.style.borderColor='';
   const f=e.dataTransfer.files[0]; if(!f||f.type!=='application/pdf') return;
-  const r=new FileReader();
-  r.onload=(ev)=>{ tempStampPdf=ev.target.result; tempStampPdfName=f.name; stampArea.innerHTML=`<span style="font-size:1.5rem;">&#128196;</span><span class="upload-text" style="color:var(--text);font-weight:600;">${esc(f.name)}</span><button class="remove-img" onclick="event.stopPropagation();removeStampPdf()">&times;</button>`; };
-  r.readAsDataURL(f);
+  const session = captureAttachmentSession('formModal');
+  void trackPendingVaultOperation((async () => {
+    const data = await readFileAsDataURL(f);
+    requireAttachmentSession(session);
+    tempStampPdf=data; tempStampPdfName=f.name;
+    showStampInUploadArea(tempStampPdf, tempStampPdfName); saveFirearmDraftSoon();
+  })()).catch(error => { if (!error || error.code !== 'STALE_ATTACHMENT_SESSION') toast('Tax stamp could not be added: ' + (error.message || error), 'error'); });
 });
 
 // =====================================================
@@ -2241,6 +4356,8 @@ stampArea.addEventListener('drop',e=>{
 // =====================================================
 function openAddAmmoModal() {
   editingAmmoId = null;
+  endRecordEdit('ammo');
+  beginAttachmentSession('ammoModal');
   document.getElementById('ammoModalTitle').textContent = 'Add Ammunition';
   document.getElementById('saveAmmoBtn').textContent = 'Save Ammunition';
   clearAmmoForm();
@@ -2250,6 +4367,7 @@ function openAddAmmoModal() {
 function editAmmo(id) {
   const a = db.ammo.find(x => x.id === id); if (!a) return;
   editingAmmoId = id;
+  beginAttachmentSession('ammoModal');
   document.getElementById('ammoModalTitle').textContent = 'Edit Ammunition';
   document.getElementById('saveAmmoBtn').textContent = 'Update Ammunition';
   document.getElementById('aCaliber').value = a.caliber || '';
@@ -2262,6 +4380,7 @@ function editAmmo(id) {
   document.getElementById('aNotes').innerHTML = a.notes || '';
   tempReceipts.a = a.receipt || null; tempReceipts.aName = a.receiptName || null;
   showReceiptInUploadArea('a', a.receipt, a.receiptName);
+  beginRecordEdit('ammo', id, collectAmmoFormRecord(id));
   document.getElementById('ammoModal').classList.add('open');
 }
 
@@ -2271,13 +4390,12 @@ function clearAmmoForm() {
   tempReceipts.a = null; tempReceipts.aName = null; resetReceiptUpload('a');
 }
 
-function closeAmmoModal() { document.getElementById('ammoModal').classList.remove('open'); editingAmmoId = null; }
+function closeAmmoModal() { endAttachmentSession('ammoModal'); document.getElementById('ammoModal').classList.remove('open'); editingAmmoId = null; endRecordEdit('ammo'); }
 
-async function saveAmmo() {
-  const caliber = document.getElementById('aCaliber').value.trim();
-  if (!caliber) { showFieldError(document.getElementById('aCaliber'), 'Enter a caliber or gauge.'); return; }
-  const data = {
-    id: editingAmmoId || generateId(), caliber,
+function collectAmmoFormRecord(id) {
+  return {
+    id,
+    caliber: document.getElementById('aCaliber').value.trim(),
     brand: document.getElementById('aBrand').value.trim(),
     quantity: document.getElementById('aQuantity').value,
     purchaseDate: document.getElementById('aPurchaseDate').value,
@@ -2285,17 +4403,39 @@ async function saveAmmo() {
     location: document.getElementById('aLocation').value.trim(),
     lowStock: document.getElementById('aLowStock').value || 0,
     notes: rteValue('aNotes'),
-    receipt: tempReceipts.a, receiptName: tempReceipts.aName
+    receipt: tempReceipts.a,
+    receiptName: tempReceipts.aName
   };
-  const itemName = (data.brand || data.caliber);
-  if (editingAmmoId) {
-    addAuditEntry('edit', 'ammo', itemName, '');
-    const i = db.ammo.findIndex(a => a.id === editingAmmoId); if (i > -1) db.ammo[i] = data;
-  } else {
-    addAuditEntry('create', 'ammo', itemName, '');
-    db.ammo.push(data);
-  }
-  await saveData(); render(); closeAmmoModal();
+}
+
+async function saveAmmo() {
+  return withFormSaveLock('ammo', 'saveAmmoBtn', async () => {
+    if (!await waitForFormAttachments('ammoModal', 'Receipt')) return false;
+    const caliber = document.getElementById('aCaliber').value.trim();
+    if (!caliber) { showFieldError(document.getElementById('aCaliber'), 'Enter a caliber or gauge.'); return false; }
+    let data = collectAmmoFormRecord(editingAmmoId || generateId());
+    let editResult = null;
+    if (editingAmmoId) {
+      editResult = await mergeRecordEdit('ammo', editingAmmoId, data);
+      if (editResult.cancelled) return false;
+      data = editResult.record;
+    }
+    const previousDatabase = structuredClone(db);
+    const itemName = (data.brand || data.caliber);
+    if (editingAmmoId) {
+      addAuditEntry('edit', 'ammo', itemName, '');
+      const i = db.ammo.findIndex(a => a.id === editingAmmoId); if (i > -1) db.ammo[i] = data; else db.ammo.push(data);
+    } else {
+      addAuditEntry('create', 'ammo', itemName, '');
+      db.ammo.push(data);
+    }
+    const attemptedDatabase = structuredClone(db);
+    if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'ammoModal', 'Ammunition'); return false; }
+    if (!await resolveRecoveredFormSession('ammoModal')) { holdCommittedRecoveredForm('ammoModal', 'saveAmmoBtn'); return true; }
+    render(); closeAmmoModal();
+    if (editResult && editResult.conflicts.length) toast('Ammunition saved with your field-by-field conflict choices.', 'success', 6000);
+    return true;
+  });
 }
 
 async function quickAmmoAdjust(id, direction) {
@@ -2319,6 +4459,8 @@ async function deleteAmmo(id) {
 // =====================================================
 function openAccessoryModal(editId) {
   editingAccessoryId = editId || null;
+  endRecordEdit('accessories');
+  beginAttachmentSession('accessoryModal');
   document.getElementById('accessoryModalTitle').textContent = editId ? 'Edit Accessory' : 'Add Accessory';
   document.getElementById('saveAccBtn').textContent = editId ? 'Update Accessory' : 'Save Accessory';
   populateFirearmDropdown();
@@ -2336,11 +4478,12 @@ function openAccessoryModal(editId) {
     document.getElementById('accNotes').innerHTML = a.notes || '';
     tempReceipts.acc = a.receipt || null; tempReceipts.accName = a.receiptName || null;
     showReceiptInUploadArea('acc', a.receipt, a.receiptName);
+    beginRecordEdit('accessories', editId, collectAccessoryFormRecord(editId));
   } else { clearAccessoryForm(); }
   document.getElementById('accessoryModal').classList.add('open');
 }
 
-function closeAccessoryModal() { document.getElementById('accessoryModal').classList.remove('open'); editingAccessoryId = null; }
+function closeAccessoryModal() { endAttachmentSession('accessoryModal'); document.getElementById('accessoryModal').classList.remove('open'); editingAccessoryId = null; endRecordEdit('accessories'); }
 
 function clearAccessoryForm() {
   ['accName','accBrand','accModel','accSerial','accPrice','accDate'].forEach(id => document.getElementById(id).value = '');
@@ -2361,11 +4504,10 @@ function populateFirearmDropdown() {
   sel.value = cur;
 }
 
-async function saveAccessory() {
-  const name = document.getElementById('accName').value.trim();
-  if (!name) { showFieldError(document.getElementById('accName'), 'Enter an accessory name.'); return; }
-  const data = {
-    id: editingAccessoryId || generateId(), name,
+function collectAccessoryFormRecord(id) {
+  return {
+    id,
+    name: document.getElementById('accName').value.trim(),
     category: document.getElementById('accCategory').value,
     brand: document.getElementById('accBrand').value.trim(),
     model: document.getElementById('accModel').value.trim(),
@@ -2375,16 +4517,38 @@ async function saveAccessory() {
     condition: document.getElementById('accCondition').value,
     firearmId: document.getElementById('accFirearm').value,
     notes: rteValue('accNotes'),
-    receipt: tempReceipts.acc, receiptName: tempReceipts.accName
+    receipt: tempReceipts.acc,
+    receiptName: tempReceipts.accName
   };
-  if (editingAccessoryId) {
-    addAuditEntry('edit', 'accessory', name, '');
-    const i = db.accessories.findIndex(a => a.id === editingAccessoryId); if (i > -1) db.accessories[i] = data;
-  } else {
-    addAuditEntry('create', 'accessory', name, '');
-    db.accessories.push(data);
-  }
-  await saveData(); render(); closeAccessoryModal();
+}
+
+async function saveAccessory() {
+  return withFormSaveLock('accessory', 'saveAccBtn', async () => {
+    if (!await waitForFormAttachments('accessoryModal', 'Receipt')) return false;
+    const name = document.getElementById('accName').value.trim();
+    if (!name) { showFieldError(document.getElementById('accName'), 'Enter an accessory name.'); return false; }
+    let data = collectAccessoryFormRecord(editingAccessoryId || generateId());
+    let editResult = null;
+    if (editingAccessoryId) {
+      editResult = await mergeRecordEdit('accessories', editingAccessoryId, data);
+      if (editResult.cancelled) return false;
+      data = editResult.record;
+    }
+    const previousDatabase = structuredClone(db);
+    if (editingAccessoryId) {
+      addAuditEntry('edit', 'accessory', data.name, '');
+      const i = db.accessories.findIndex(a => a.id === editingAccessoryId); if (i > -1) db.accessories[i] = data; else db.accessories.push(data);
+    } else {
+      addAuditEntry('create', 'accessory', name, '');
+      db.accessories.push(data);
+    }
+    const attemptedDatabase = structuredClone(db);
+    if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'accessoryModal', 'Accessory'); return false; }
+    if (!await resolveRecoveredFormSession('accessoryModal')) { holdCommittedRecoveredForm('accessoryModal', 'saveAccBtn'); return true; }
+    render(); closeAccessoryModal();
+    if (editResult && editResult.conflicts.length) toast('Accessory saved with your field-by-field conflict choices.', 'success', 6000);
+    return true;
+  });
 }
 
 async function deleteAccessory(id) {
@@ -2407,10 +4571,11 @@ function renderAccessoriesTab() {
   if (search) {
     items = items.filter(a => (a.name||'').toLowerCase().includes(search) || (a.brand||'').toLowerCase().includes(search) || (a.model||'').toLowerCase().includes(search) || (a.category||'').toLowerCase().includes(search) || (a.serial||'').toLowerCase().includes(search) || getFirearmLabel(a.firearmId).toLowerCase().includes(search) || (a.notes||'').replace(/<[^>]*>/g,'').toLowerCase().includes(search));
   }
-  const totalValue = db.accessories.reduce((s, a) => s + (parseFloat(a.price) || 0), 0);
+  updatePageContext(items.length);
+  const totalValue = items.reduce((s, a) => s + (parseFloat(a.price) || 0), 0);
   let h = `<div style="padding: 16px 24px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; font-size: 0.86rem; font-weight: 600;">
-    <span>Accessories: <span style="color: var(--accent);">${db.accessories.length}</span></span>
-    <span>Total Value: <span style="color: var(--accent);">$${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></span>
+    <span>Accessories shown: <span style="color: var(--accent);">${items.length}</span></span>
+    <span>Value shown: <span style="color: var(--accent);">$${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></span>
   </div>`;
   if (items.length === 0) {
     h += db.accessories.length === 0
@@ -2423,14 +4588,14 @@ function renderAccessoriesTab() {
     const firearmLabel = getFirearmLabel(a.firearmId);
     const pr = a.price ? money(a.price) : '--';
     const hasReceipt = a.receipt ? true : false;
-    h += `<tr style="cursor:pointer;" onclick="openAccessoryModal('${a.id}')">
+    h += `<tr>
       <td style="font-weight:600;">${esc(a.name||'--')}</td>
       <td><span style="padding:2px 8px;background:var(--bg3);border-radius:4px;font-size:0.78rem;">${esc(a.category||'--')}</span></td>
       <td>${esc(a.brand||'--')}</td><td>${esc(a.model||'--')}</td>
       <td>${a.firearmId ? '<span style="color:var(--accent);font-weight:500;">' + esc(firearmLabel) + '</span>' : '<span style="color:var(--text3);">Not Assigned</span>'}</td>
       <td>${esc(a.condition||'--')}</td><td>${pr}</td><td>${fmtDate(a.purchaseDate)}</td>
       <td>${hasReceipt ? '<button class="btn btn-small btn-outline" onclick="event.stopPropagation();viewReceiptInBrowser(\''+a.id+'\',\'accessories\')">View</button> <a href="'+a.receipt+'" download="'+(a.receiptName||'receipt')+'" onclick="event.stopPropagation();" class="btn btn-small btn-file" style="text-decoration:none;display:inline-block;">DL</a>' : '<span style="color:var(--text3);">--</span>'}</td>
-      <td style="text-align:right;"><button class="btn btn-small btn-danger" onclick="event.stopPropagation(); deleteAccessory('${a.id}')">Del</button></td>
+      <td style="text-align:right;white-space:nowrap;"><button class="btn btn-small btn-outline" data-item-id="${escAttr(a.id)}" onclick="openAccessoryModal(this.dataset.itemId)">Edit</button> <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); deleteAccessory('${a.id}')">Delete</button></td>
     </tr>`;
   });
   h += '</tbody></table>';
@@ -2454,22 +4619,29 @@ function openMaintenanceModal(firearmId) {
 function closeMaintenanceModal() { document.getElementById('maintenanceModal').classList.remove('open'); editingMaintenanceId = null; }
 
 async function saveMaintenanceEntry() {
-  const firearm = db.firearms.find(f => f.id === editingMaintenanceId);
-  if (!firearm) return;
-  if (!firearm.maintenanceLog) firearm.maintenanceLog = [];
-  const entry = {
-    id: generateId(),
-    date: document.getElementById('mDate').value,
-    type: document.getElementById('mType').value,
-    roundCount: document.getElementById('mRoundCount').value,
-    parts: document.getElementById('mParts').value.trim(),
-    description: rteValue('mDescription')
-  };
-  firearm.maintenanceLog.push(entry);
-  addAuditEntry('create', 'maintenance', (firearm.make||'')+' '+(firearm.model||''), entry.type);
-  await saveData();
-  closeMaintenanceModal();
-  openDetail(editingMaintenanceId);
+  return withFormSaveLock('maintenance', 'saveMaintenanceBtn', async () => {
+    const firearm = db.firearms.find(f => f.id === editingMaintenanceId);
+    if (!firearm) return false;
+    const previousDatabase = structuredClone(db);
+    const firearmId = editingMaintenanceId;
+    if (!firearm.maintenanceLog) firearm.maintenanceLog = [];
+    const entry = {
+      id: generateId(),
+      date: document.getElementById('mDate').value,
+      type: document.getElementById('mType').value,
+      roundCount: document.getElementById('mRoundCount').value,
+      parts: document.getElementById('mParts').value.trim(),
+      description: rteValue('mDescription')
+    };
+    firearm.maintenanceLog.push(entry);
+    addAuditEntry('create', 'maintenance', (firearm.make||'')+' '+(firearm.model||''), entry.type);
+    const attemptedDatabase = structuredClone(db);
+    if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'maintenanceModal', 'Maintenance entry'); return false; }
+    if (!await resolveRecoveredFormSession('maintenanceModal')) { holdCommittedRecoveredForm('maintenanceModal', 'saveMaintenanceBtn'); return true; }
+    closeMaintenanceModal();
+    openDetail(firearmId);
+    return true;
+  });
 }
 
 // =====================================================
@@ -2485,12 +4657,13 @@ function openDetail(id) {
       let galNav = '';
       if (imgs.length > 1) {
         galNav = '<div class="detail-gallery-nav">' + imgs.map((_, idx) =>
-          `<div class="detail-gallery-dot ${idx === currentImageIndex ? 'active' : ''}" onclick="currentImageIndex = ${idx}; openDetail('${id}')"></div>`
+          `<button type="button" class="detail-gallery-dot ${idx === currentImageIndex ? 'active' : ''}" aria-label="Show image ${idx + 1} of ${imgs.length}" aria-pressed="${idx === currentImageIndex ? 'true' : 'false'}" onclick="currentImageIndex = ${idx}; openDetail('${id}')"></button>`
         ).join('') + '</div>';
       }
-      const prevBtn = currentImageIndex > 0 ? `<span class="swipe-hint left" onclick="event.stopPropagation();currentImageIndex--;openDetail('${id}')">&#8249;</span>` : '';
-      const nextBtn = currentImageIndex < imgs.length-1 ? `<span class="swipe-hint right" onclick="event.stopPropagation();currentImageIndex++;openDetail('${id}')">&#8250;</span>` : '';
-      ic.innerHTML=`<div style="position:relative;">${prevBtn}${nextBtn}${galNav}<img class="detail-img" src="${imagesDb[imgs[currentImageIndex]]}" alt="${esc(f.make)} ${esc(f.model)}"></div>`;
+      const prevBtn = currentImageIndex > 0 ? `<button type="button" class="swipe-hint left" aria-label="Show previous image" onclick="event.stopPropagation();currentImageIndex--;openDetail('${id}')">&#8249;</button>` : '';
+      const nextBtn = currentImageIndex < imgs.length-1 ? `<button type="button" class="swipe-hint right" aria-label="Show next image" onclick="event.stopPropagation();currentImageIndex++;openDetail('${id}')">&#8250;</button>` : '';
+      const imageName = [f.make, f.model].filter(Boolean).join(' ') || 'firearm';
+      ic.innerHTML=`<div style="position:relative;">${prevBtn}${nextBtn}${galNav}<img class="detail-img" src="${imagesDb[imgs[currentImageIndex]]}" alt="${escAttr(imageName)}" role="button" tabindex="0" aria-label="Open full-size photo of ${escAttr(imageName)}"></div>`;
     } else { ic.innerHTML=`<div class="detail-img-placeholder">&#10022;</div>`; }
   } else { ic.innerHTML=`<div class="detail-img-placeholder">&#10022;</div>`; }
 
@@ -2740,7 +4913,7 @@ async function exportInsuranceReport() {
   if (!await ensureFeatureAsset('pdf', 'PDF export')) return;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
-  doc.setFontSize(16); doc.text('Personal Firearms Inventory Report', 14, 15);
+  doc.setFontSize(16); doc.text('Firearms Vault Inventory Report', 14, 15);
   doc.setFontSize(10); doc.text('Generated: ' + new Date().toLocaleString(), 14, 25);
   const rows = db.firearms.map(f => [f.make + ' ' + f.model, f.serial || '--', f.caliber || '--', f.type || '--', fmtDate(f.dateAcquired), f.price ? money(f.price) : '--', f.condition || '--']);
   doc.autoTable({ head: [['Make/Model', 'Serial #', 'Caliber', 'Type', 'Acquired', 'Price', 'Condition']], body: rows, startY: 35, theme: 'grid' });
@@ -2884,12 +5057,13 @@ function syncFirearmDisclosure(firearm) {
 setupFirearmFormDisclosure();
 
 const ModalAccessibility = (() => {
-  const selector = '.modal-overlay, .detail-overlay, #cmdk, #lightbox';
+  const selector = '.modal-overlay, .detail-overlay, .firstrun-overlay, #cmdk, #lightbox';
   const closeActions = {
     formModal: () => closeModal(), detailView: () => closeDetail(), ammoModal: () => closeAmmoModal(),
     accessoryModal: () => closeAccessoryModal(), maintenanceModal: () => closeMaintenanceModal(),
     backupModal: () => closeBackupModal(), cameraModal: () => closeCameraModal(),
     settingsModal: () => closeSettingsModal(), passwordModal: () => closePasswordModal(),
+    syncCenterModal: () => closeSyncCenter(),
     wishlistModal: () => closeWishlistModal(), dealerModal: () => closeDealerModal(),
     dealerImportModal: () => closeDealerImportModal(), cropModal: () => closeCropModal(),
     qrModal: () => closeQRModal(), shortcutsModal: () => closeShortcutsModal(),
@@ -2902,8 +5076,12 @@ const ModalAccessibility = (() => {
 
   function isOpen(el) {
     if (!el || !el.isConnected) return false;
-    if (el.id === 'cmdk' || el.id === 'lightbox') return el.style.display !== 'none';
+    if (el.id === 'cmdk' || el.id === 'lightbox' || el.id === 'firstRunPanel') return el.style.display !== 'none';
     return el.classList.contains('open');
+  }
+  function liveTop() {
+    const open = Array.from(document.querySelectorAll(selector)).filter(isOpen);
+    return open[open.length - 1] || null;
   }
   function init(el) {
     if (!el || el.dataset.a11yDialog === 'true') return;
@@ -2976,34 +5154,89 @@ const ModalAccessibility = (() => {
     requestAnimationFrame(() => { pending = false; refresh(); });
   }
   async function requestClose(el) {
-    if (!el || el.classList.contains('app-dialog')) return;
+    if (!el || el.classList.contains('app-dialog')) return false;
+    if (el.dataset.saving === 'true') {
+      toast('This save is still finishing. Keep the form open until it completes.', 'warning', 5000);
+      focusFirst(el);
+      return false;
+    }
+    if (el.id === 'formModal' && el.dataset.draftSaveCommitted === 'true') {
+      const cleaned = await clearFirearmDraft(undefined, { committed: true });
+      if (!cleaned) {
+        toast('The saved item is safe, but its old draft marker still needs cleanup. Keep this tab open and try Close again.', 'error', 9000);
+        focusFirst(el);
+        return false;
+      }
+      if (!await resolveRecoveredFormSession('formModal')) {
+        holdCommittedRecoveredForm('formModal', 'saveBtn');
+        focusFirst(el);
+        return false;
+      }
+      delete el.dataset.draftSaveCommitted;
+      el.dataset.dirty = 'false';
+      closeModal();
+      return true;
+    }
+    if (el.id === 'formModal' && editingId === null && el.dataset.dirty === 'true' && el.dataset.recoveredForm !== 'true') {
+      const draftSafe = await flushFirearmDraft();
+      if (draftSafe) {
+        el.dataset.dirty = 'false';
+        closeModal();
+        return true;
+      }
+    }
     if (el.dataset.dirty === 'true') {
       const discard = await confirmDialog('Discard the changes you made in this dialog?', { title: 'Unsaved form changes', okText: 'Discard', danger: true });
-      if (!discard) { focusFirst(el); return; }
+      if (!discard) { focusFirst(el); return false; }
+      if (el.id === 'formModal' && editingId === null) {
+        const discarded = await clearFirearmDraft(undefined, { discarded: true });
+        if (!discarded) {
+          toast('The discarded draft could not be cleared safely. Keep this form open and try again.', 'error', 9000);
+          focusFirst(el);
+          return false;
+        }
+      }
+      else if (el.id === 'formModal') {
+        const editOnlyImages = [..._firearmDraftOwnedImages];
+        _firearmDraftOwnedImages.clear();
+        await removeUnreferencedDraftImages(editOnlyImages);
+      }
+      if (el.dataset.recoveredForm === 'true' && !await resolveRecoveredFormSession(el.id)) {
+        focusFirst(el);
+        return false;
+      }
     }
     el.dataset.dirty = 'false';
     const action = closeActions[el.id];
-    if (action) action();
+    if (!action) return false;
+    action();
+    return true;
   }
   document.addEventListener('input', e => {
     const el = e.target.closest && e.target.closest(selector);
-    if (el && !el.classList.contains('app-dialog') && !e.target.matches('[data-no-dirty]')) el.dataset.dirty = 'true';
+    if (el && !el.classList.contains('app-dialog') && !e.target.matches('[data-no-dirty]')) {
+      el.dataset.dirty = 'true';
+      saveRecoveredFormSoon(el.id);
+    }
   }, true);
   document.addEventListener('change', e => {
     const el = e.target.closest && e.target.closest(selector);
-    if (el && !el.classList.contains('app-dialog') && !e.target.matches('[data-no-dirty]')) el.dataset.dirty = 'true';
+    if (el && !el.classList.contains('app-dialog') && !e.target.matches('[data-no-dirty]')) {
+      el.dataset.dirty = 'true';
+      saveRecoveredFormSoon(el.id);
+    }
   }, true);
   document.addEventListener('click', e => {
     const el = e.target.closest && e.target.closest(selector);
-    if (!el || el !== stack[stack.length - 1] || el.classList.contains('app-dialog')) return;
+    if (!el || el !== liveTop() || el.classList.contains('app-dialog')) return;
     const button = e.target.closest('.modal-close, .detail-close, .lightbox-close, .modal-footer button');
     const dismissButton = button && (/^(close|cancel)$/i.test(button.textContent.trim()) || button.matches('.modal-close, .detail-close, .lightbox-close'));
-    if ((e.target === el || dismissButton) && el.dataset.dirty === 'true') {
+    if ((e.target === el || dismissButton) && (el.dataset.dirty === 'true' || el.dataset.saving === 'true')) {
       e.preventDefault(); e.stopImmediatePropagation(); requestClose(el);
     }
   }, true);
   document.addEventListener('keydown', e => {
-    const top = stack[stack.length - 1];
+    const top = liveTop();
     if (!top) return;
     if (e.key === 'Escape') {
       if (top.classList.contains('app-dialog')) return;
@@ -3021,6 +5254,7 @@ const ModalAccessibility = (() => {
   refresh();
   return { refresh, requestClose };
 })();
+window.requestModalClose = el => ModalAccessibility.requestClose(el);
 
 function associateFormLabels(root) {
   const scope = root && root.querySelectorAll ? root : document;
@@ -3096,6 +5330,8 @@ document.getElementById('backupModal').addEventListener('click',e=>{if(e.target=
 document.getElementById('cameraModal').addEventListener('click',e=>{if(e.target===document.getElementById('cameraModal'))closeCameraModal();});
 document.getElementById('accessoryModal').addEventListener('click',e=>{if(e.target===document.getElementById('accessoryModal'))closeAccessoryModal();});
 document.getElementById('settingsModal').addEventListener('click',e=>{if(e.target===document.getElementById('settingsModal'))closeSettingsModal();});
+document.getElementById('syncCenterModal').addEventListener('click',e=>{if(e.target===document.getElementById('syncCenterModal'))closeSyncCenter();});
+document.getElementById('missingMediaFile').addEventListener('change', handleMissingMediaFile);
 document.getElementById('passwordModal').addEventListener('click',e=>{if(e.target===document.getElementById('passwordModal'))closePasswordModal();});
 document.getElementById('wishlistModal').addEventListener('click',e=>{if(e.target===document.getElementById('wishlistModal'))closeWishlistModal();});
 document.getElementById('dealerModal').addEventListener('click',e=>{if(e.target===document.getElementById('dealerModal'))closeDealerModal();});
@@ -3176,6 +5412,7 @@ let editingWishlistId = null;
 
 function openWishlistModal(editId) {
   editingWishlistId = editId || null;
+  endRecordEdit('wishlist');
   document.getElementById('wishlistModalTitle').textContent = editId ? 'Edit Wishlist Item' : 'Add to Wishlist';
   if (editId) {
     const w = db.wishlist.find(x => x.id === editId);
@@ -3189,6 +5426,7 @@ function openWishlistModal(editId) {
     document.getElementById('wDealer').value = w.dealer || '';
     document.getElementById('wURL').value = w.url || '';
     document.getElementById('wNotes').innerHTML = w.notes || '';
+    beginRecordEdit('wishlist', editId, collectWishlistFormRecord(editId));
   } else {
     ['wMake','wModel','wCaliber','wPrice','wDealer','wURL'].forEach(id => document.getElementById(id).value = '');
     document.getElementById('wNotes').innerHTML = '';
@@ -3198,26 +5436,47 @@ function openWishlistModal(editId) {
   document.getElementById('wishlistModal').classList.add('open');
 }
 
-function closeWishlistModal() { document.getElementById('wishlistModal').classList.remove('open'); editingWishlistId = null; }
+function closeWishlistModal() { document.getElementById('wishlistModal').classList.remove('open'); editingWishlistId = null; endRecordEdit('wishlist'); }
 
-async function saveWishlistItem() {
-  const make = document.getElementById('wMake').value.trim();
-  const model = document.getElementById('wModel').value.trim();
-  if (!make && !model) { showFieldError(document.getElementById('wMake'), 'Enter at least a manufacturer or model.'); return; }
-  const data = {
-    id: editingWishlistId || generateId(), make, model,
+function collectWishlistFormRecord(id) {
+  return {
+    id,
+    make: document.getElementById('wMake').value.trim(),
+    model: document.getElementById('wModel').value.trim(),
     caliber: document.getElementById('wCaliber').value.trim(),
     type: document.getElementById('wType').value,
     price: document.getElementById('wPrice').value,
     priority: document.getElementById('wPriority').value,
     dealer: document.getElementById('wDealer').value.trim(),
     url: document.getElementById('wURL').value.trim(),
-    notes: rteValue('wNotes'),
-    dateAdded: editingWishlistId ? (db.wishlist.find(x=>x.id===editingWishlistId)?.dateAdded || new Date().toISOString().slice(0,10)) : new Date().toISOString().slice(0,10)
+    notes: rteValue('wNotes')
   };
-  if (editingWishlistId) { const i = db.wishlist.findIndex(x => x.id === editingWishlistId); if (i > -1) db.wishlist[i] = data; addAuditEntry('edit','wishlist',make+' '+model,''); }
-  else { db.wishlist.push(data); addAuditEntry('create','wishlist',make+' '+model,''); }
-  await saveData(); render(); closeWishlistModal();
+}
+
+async function saveWishlistItem() {
+  return withFormSaveLock('wishlist', 'saveWishlistBtn', async () => {
+    const make = document.getElementById('wMake').value.trim();
+    const model = document.getElementById('wModel').value.trim();
+    if (!make && !model) { showFieldError(document.getElementById('wMake'), 'Enter at least a manufacturer or model.'); return false; }
+    let data = collectWishlistFormRecord(editingWishlistId || generateId());
+    let editResult = null;
+    if (editingWishlistId) {
+      editResult = await mergeRecordEdit('wishlist', editingWishlistId, data);
+      if (editResult.cancelled) return false;
+      data = editResult.record;
+    } else {
+      data.dateAdded = new Date().toISOString().slice(0,10);
+    }
+    const previousDatabase = structuredClone(db);
+    if (editingWishlistId) { const i = db.wishlist.findIndex(x => x.id === editingWishlistId); if (i > -1) db.wishlist[i] = data; else db.wishlist.push(data); addAuditEntry('edit','wishlist',(data.make||'')+' '+(data.model||''),''); }
+    else { db.wishlist.push(data); addAuditEntry('create','wishlist',make+' '+model,''); }
+    const attemptedDatabase = structuredClone(db);
+    if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'wishlistModal', 'Wishlist item'); return false; }
+    if (!await resolveRecoveredFormSession('wishlistModal')) { holdCommittedRecoveredForm('wishlistModal', 'saveWishlistBtn'); return true; }
+    render(); closeWishlistModal();
+    if (editResult && editResult.conflicts.length) toast('Wishlist item saved with your field-by-field conflict choices.', 'success', 6000);
+    return true;
+  });
 }
 
 async function deleteWishlistItem(id) {
@@ -3233,34 +5492,46 @@ async function moveWishlistToCollection(id) {
   if (!w) return;
   if (!await confirmDialog('Move "' + (w.make||'')+' '+(w.model||'')+'" to your collection? This will open the Add Firearm form.', { title: 'Move to collection', okText: 'Move' })) return;
   closeWishlistModal();
-  openAddModal();
+  await openAddModal();
   document.getElementById('fMake').value = w.make || '';
   document.getElementById('fModel').value = w.model || '';
   document.getElementById('fCaliber').value = w.caliber || '';
   document.getElementById('fType').value = w.type || 'Rifle';
   document.getElementById('fPrice').value = w.price || '';
+  pendingWishlistMoveId = id;
+  saveFirearmDraftSoon();
 }
 
 let _wishFilter = 'all';
 const _wishPrio = (w) => (w.priority === 'high' || w.priority === 'low') ? w.priority : 'medium';
-function setWishlistFilter(p) { _wishFilter = p; renderWishlistTab(); }
+function setWishlistFilter(p) { _wishFilter = p; render(); }
 // Click a priority pill to cycle High → Medium → Low.
 function cycleWishlistPriority(id) {
   const w = (db.wishlist || []).find(x => x.id === id);
   if (!w) return;
   const order = ['high', 'medium', 'low'];
   w.priority = order[(order.indexOf(_wishPrio(w)) + 1) % order.length];
-  saveData(); renderWishlistTab();
+  saveData(); render();
 }
 
 function renderWishlistTab() {
   document.getElementById('cardGrid').style.display = 'none';
   document.getElementById('tableContainer').style.display = 'block';
   document.getElementById('emptyState').style.display = 'none';
-  const items = db.wishlist || [];
+  const allItems = db.wishlist || [];
+  const query = (document.getElementById('searchBox').value || '').trim().toLowerCase();
+  const items = query ? allItems.filter(w => [w.make, w.model, w.caliber, w.type, w.dealer, w.notes]
+    .some(value => String(value || '').replace(/<[^>]*>/g, ' ').toLowerCase().includes(query))) : allItems;
+  updatePageContext(items.length);
   const totalTarget = items.reduce((s, w) => s + (parseFloat(w.price) || 0), 0);
   let h = '<div style="padding:16px 24px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;font-size:0.86rem;font-weight:600;"><span>Wishlist Items: <span style="color:var(--accent);">' + items.length + '</span></span><span>Target Budget: <span style="color:var(--accent);">' + money(totalTarget) + '</span></span></div>';
-  if (items.length === 0) { h += tabEmpty('⭐', 'Your wishlist is empty', 'Track guns you want, set a target price and priority, then move them to your collection when you buy.', '<button class="btn btn-primary" onclick="openWishlistModal()">+ Add Wishlist Item</button>'); document.getElementById('tableContainer').innerHTML = h; return; }
+  if (items.length === 0) {
+    h += allItems.length
+      ? tabEmpty('🔍', 'No wishlist items match your search', 'Try another make, model, caliber, or dealer.', '<button class="btn btn-outline" onclick="clearAllFilters()">Clear search</button>')
+      : tabEmpty('⭐', 'Your wishlist is empty', 'Track firearms you want, set a target price and priority, then move them to your collection when you buy.', '<button class="btn btn-primary" onclick="openWishlistModal()">Add wishlist item</button>');
+    document.getElementById('tableContainer').innerHTML = h;
+    return;
+  }
 
   // Budget split + counts by priority
   const byP = { high: 0, medium: 0, low: 0 }, cnt = { high: 0, medium: 0, low: 0 };
@@ -3279,17 +5550,18 @@ function renderWishlistTab() {
 
   let rows = [...items].sort((a, b) => { const o = { high: 0, medium: 1, low: 2 }; return o[_wishPrio(a)] - o[_wishPrio(b)]; });
   if (_wishFilter !== 'all') rows = rows.filter(w => _wishPrio(w) === _wishFilter);
+  updatePageContext(rows.length);
 
   h += '<table class="data-table"><thead><tr><th>Priority</th><th>Make</th><th>Model</th><th>Caliber</th><th>Type</th><th>Target Price</th><th>Dealer</th><th>Added</th><th></th></tr></thead><tbody>';
   rows.forEach(w => {
     const pr = w.price ? money(w.price) : '--';
-    h += '<tr style="cursor:pointer;" onclick="openWishlistModal(\''+w.id+'\')">';
+    h += '<tr>';
     h += '<td><button class="wishlist-priority '+_wishPrio(w)+'" title="Click to change priority" aria-label="Priority: '+_wishPrio(w)+' (click to change)" onclick="event.stopPropagation();cycleWishlistPriority(\''+w.id+'\')">'+_wishPrio(w).toUpperCase()+'</button></td>';
     h += '<td>'+esc(w.make||'--')+'</td><td>'+esc(w.model||'--')+'</td><td>'+esc(w.caliber||'--')+'</td><td>'+esc(w.type||'--')+'</td><td>'+pr+'</td>';
     h += '<td>'+(w.url?'<a href="'+escAttr(safeHref(w.url))+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--accent);">'+esc(w.dealer||'Link')+'</a>':esc(w.dealer||'--'))+'</td>';
     h += '<td>'+fmtDate(w.dateAdded)+'</td>';
-    h += '<td style="text-align:right;white-space:nowrap;"><button class="btn btn-small btn-primary" onclick="event.stopPropagation();moveWishlistToCollection(\''+w.id+'\')">Buy</button> <button class="btn btn-small btn-danger" onclick="event.stopPropagation();deleteWishlistItem(\''+w.id+'\')">Del</button></td></tr>';
-    if (rteShow(w.notes)) h += '<tr class="wishlist-note-row" style="cursor:pointer;" onclick="openWishlistModal(\''+w.id+'\')"><td colspan="9"><div class="rte-display wishlist-note">' + w.notes + '</div></td></tr>';
+    h += '<td style="text-align:right;white-space:nowrap;"><button class="btn btn-small btn-outline" data-item-id="'+escAttr(w.id)+'" onclick="openWishlistModal(this.dataset.itemId)">Edit</button> <button class="btn btn-small btn-primary" onclick="event.stopPropagation();moveWishlistToCollection(\''+w.id+'\')">Buy</button> <button class="btn btn-small btn-danger" onclick="event.stopPropagation();deleteWishlistItem(\''+w.id+'\')">Delete</button></td></tr>';
+    if (rteShow(w.notes)) h += '<tr class="wishlist-note-row"><td colspan="9"><div class="rte-display wishlist-note">' + w.notes + '</div></td></tr>';
   });
   h += '</tbody></table>';
   document.getElementById('tableContainer').innerHTML = h;
@@ -3302,6 +5574,7 @@ let editingDealerId = null;
 
 function openDealerModal(editId) {
   editingDealerId = editId || null;
+  endRecordEdit('dealers');
   document.getElementById('dealerModalTitle').textContent = editId ? 'Edit Dealer' : 'Add FFL Dealer';
   if (editId) {
     const d = db.dealers.find(x => x.id === editId);
@@ -3313,6 +5586,7 @@ function openDealerModal(editId) {
     document.getElementById('dAddress').value = d.address || '';
     document.getElementById('dWebsite').value = d.website || '';
     document.getElementById('dNotes').innerHTML = d.notes || '';
+    beginRecordEdit('dealers', editId, collectDealerFormRecord(editId));
   } else {
     ['dName','dFFL','dPhone','dEmail','dAddress','dWebsite'].forEach(id => document.getElementById(id).value = '');
     document.getElementById('dNotes').innerHTML = '';
@@ -3320,17 +5594,44 @@ function openDealerModal(editId) {
   document.getElementById('dealerModal').classList.add('open');
 }
 
-function closeDealerModal() { document.getElementById('dealerModal').classList.remove('open'); editingDealerId = null; }
+function closeDealerModal() { document.getElementById('dealerModal').classList.remove('open'); editingDealerId = null; endRecordEdit('dealers'); }
+
+function collectDealerFormRecord(id) {
+  return {
+    id,
+    name: document.getElementById('dName').value.trim(),
+    ffl: document.getElementById('dFFL').value.trim(),
+    phone: document.getElementById('dPhone').value.trim(),
+    email: document.getElementById('dEmail').value.trim(),
+    address: document.getElementById('dAddress').value.trim(),
+    website: document.getElementById('dWebsite').value.trim(),
+    notes: rteValue('dNotes')
+  };
+}
 
 async function saveDealer() {
-  const name = document.getElementById('dName').value.trim();
-  if (!name) { showFieldError(document.getElementById('dName'), 'Enter a dealer name.'); return; }
-  const notes = rteValue('dNotes');
-  const existing = editingDealerId ? db.dealers.find(x => x.id === editingDealerId) : null;
-  const data = { id: editingDealerId || generateId(), name, ffl: document.getElementById('dFFL').value.trim(), phone: document.getElementById('dPhone').value.trim(), email: document.getElementById('dEmail').value.trim(), address: document.getElementById('dAddress').value.trim(), website: document.getElementById('dWebsite').value.trim(), notes, favorite: existing ? !!existing.favorite : false };
-  if (editingDealerId) { const i = db.dealers.findIndex(x => x.id === editingDealerId); if (i > -1) db.dealers[i] = data; addAuditEntry('edit','dealer',name,''); }
-  else { db.dealers.push(data); addAuditEntry('create','dealer',name,''); }
-  await saveData(); render(); closeDealerModal();
+  return withFormSaveLock('dealer', 'saveDealerBtn', async () => {
+    const name = document.getElementById('dName').value.trim();
+    if (!name) { showFieldError(document.getElementById('dName'), 'Enter a dealer name.'); return false; }
+    let data = collectDealerFormRecord(editingDealerId || generateId());
+    let editResult = null;
+    if (editingDealerId) {
+      editResult = await mergeRecordEdit('dealers', editingDealerId, data);
+      if (editResult.cancelled) return false;
+      data = editResult.record;
+    } else {
+      data.favorite = false;
+    }
+    const previousDatabase = structuredClone(db);
+    if (editingDealerId) { const i = db.dealers.findIndex(x => x.id === editingDealerId); if (i > -1) db.dealers[i] = data; else db.dealers.push(data); addAuditEntry('edit','dealer',data.name,''); }
+    else { db.dealers.push(data); addAuditEntry('create','dealer',name,''); }
+    const attemptedDatabase = structuredClone(db);
+    if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'dealerModal', 'Dealer'); return false; }
+    if (!await resolveRecoveredFormSession('dealerModal')) { holdCommittedRecoveredForm('dealerModal', 'saveDealerBtn'); return true; }
+    render(); closeDealerModal();
+    if (editResult && editResult.conflicts.length) toast('Dealer saved with your field-by-field conflict choices.', 'success', 6000);
+    return true;
+  });
 }
 
 async function deleteDealer(id) {
@@ -3510,11 +5811,11 @@ function setDealerArea(area) {
   applyDealerFilter();
 }
 
-function setDealerSort(v) { _dealerSort = v; renderDealersTab(); }
+function setDealerSort(v) { _dealerSort = v; render(); }
 
 // Filter the already-rendered cards in place (keeps search-box focus, no rebuild).
 function applyDealerFilter() {
-  const input = document.getElementById('dealerSearch');
+  const input = document.getElementById('dealerSearch') || document.getElementById('searchBox');
   if (input) _dealerFilterQ = input.value.trim().toLowerCase();
   let shown = 0;
   document.querySelectorAll('#dealerGrid .ffl-card').forEach(card => {
@@ -3528,18 +5829,30 @@ function applyDealerFilter() {
   if (noMatch) noMatch.style.display = shown ? 'none' : 'block';
   const cnt = document.getElementById('dealerShownCount');
   if (cnt) cnt.textContent = shown;
+  updatePageContext(shown);
 }
 
 function renderDealersTab() {
   document.getElementById('cardGrid').style.display = 'none';
   document.getElementById('tableContainer').style.display = 'block';
   document.getElementById('emptyState').style.display = 'none';
-  const items = db.dealers || [];
+  const allItems = db.dealers || [];
+  const query = (document.getElementById('searchBox').value || '').trim().toLowerCase();
+  _dealerFilterQ = query;
+  const items = query ? allItems.filter(d => [d.name, d.ffl, d.address, d.city, d.state, d.phone, d.email, d.notes]
+    .some(value => String(value || '').replace(/<[^>]*>/g, ' ').toLowerCase().includes(query))) : allItems;
+  updatePageContext(items.length);
   let h = '<div style="padding:16px 24px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">'
     + '<span style="font-size:0.86rem;font-weight:600;">FFL Dealers: <span style="color:var(--accent);" id="dealerShownCount">' + items.length + '</span></span>'
     + '<button class="btn btn-small btn-secondary" onclick="openDealerImportModal()">⬇️ Import dealers</button>'
     + '</div>';
-  if (items.length === 0) { h += tabEmpty('🏢', 'No dealers saved yet', 'Add your go-to FFLs, or load the built-in Arizona starter list to get going fast.', '<button class="btn btn-primary" onclick="openDealerImportModal()">⬇️ Import dealers</button>'); document.getElementById('tableContainer').innerHTML = h; return; }
+  if (items.length === 0) {
+    h += allItems.length
+      ? tabEmpty('🔍', 'No dealers match your search', 'Try another dealer name, city, FFL number, or note.', '<button class="btn btn-outline" onclick="clearAllFilters()">Clear search</button>')
+      : tabEmpty('🏢', 'No dealers saved yet', 'Add your go-to FFLs, or load the built-in Arizona starter list to get going fast.', '<button class="btn btn-primary" onclick="openDealerImportModal()">Import dealers</button>');
+    document.getElementById('tableContainer').innerHTML = h;
+    return;
+  }
 
   // Area counts for the filter chips
   const counts = {}; items.forEach(d => { const a = dealerArea(d); counts[a] = (counts[a] || 0) + 1; });
@@ -3554,7 +5867,6 @@ function renderDealersTab() {
         '<option value="' + o[0] + '"' + (_dealerSort === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('')
     + '</select>';
   h += '<div class="dealer-filterbar">'
-    + '<input type="text" id="dealerSearch" class="dealer-search" placeholder="Search name, city, notes…" oninput="applyDealerFilter()" value="' + escAttr(_dealerFilterQ) + '">'
     + '<div class="dealer-chips">' + chips + '</div>'
     + sortSel + '</div>';
 
@@ -3569,10 +5881,11 @@ function renderDealersTab() {
     const area = dealerArea(d);
     const notesText = (d.notes || '').replace(/<[^>]*>/g, ' '); // strip rich-text tags for search
     const text = ((d.name || '') + ' ' + (d.address || '') + ' ' + (d.phone || '') + ' ' + (d.email || '') + ' ' + notesText + ' ' + (d.ffl || '')).toLowerCase();
-    h += '<div class="ffl-card' + (d.favorite ? ' is-fav' : '') + '" data-area="' + area + '" data-text="' + escAttr(text) + '" style="cursor:pointer;" onclick="openDealerModal(\'' + d.id + '\')">';
+    h += '<div class="ffl-card' + (d.favorite ? ' is-fav' : '') + '" data-area="' + area + '" data-text="' + escAttr(text) + '">';
     h += '<span class="ffl-area-badge">' + esc(labelFor(area)) + '</span>';
     h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;"><h4>' + esc(d.name) + '</h4>'
       + '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0;">'
+      + '<button class="btn btn-small btn-outline" data-item-id="' + escAttr(d.id) + '" onclick="openDealerModal(this.dataset.itemId)">Edit</button>'
       + '<button class="dealer-fav' + (d.favorite ? ' active' : '') + '" title="' + (d.favorite ? 'Remove from preferred' : 'Mark as preferred') + '" aria-label="' + (d.favorite ? 'Remove from preferred dealers' : 'Mark as preferred dealer') + '" aria-pressed="' + (d.favorite ? 'true' : 'false') + '" onclick="event.stopPropagation();toggleDealerFavorite(\'' + d.id + '\')">' + (d.favorite ? '★' : '☆') + '</button>'
       + '<button class="btn btn-small btn-danger" onclick="event.stopPropagation();deleteDealer(\'' + d.id + '\')">Del</button>'
       + '</div></div>';
@@ -3599,13 +5912,15 @@ let tempCustomFields = [];
 function addCustomField(name, value) {
   tempCustomFields.push({ name: name || '', value: value || '' });
   renderCustomFields();
+  saveFirearmDraftSoon();
 }
 
-function removeCustomField(idx) { tempCustomFields.splice(idx, 1); renderCustomFields(); }
+function removeCustomField(idx) { tempCustomFields.splice(idx, 1); renderCustomFields(); saveFirearmDraftSoon(); }
 
 window.updateCustomFieldValue = function updateCustomFieldValue(index, field, value) {
   if (!tempCustomFields[index] || !['name', 'value'].includes(field)) return;
   tempCustomFields[index][field] = String(value == null ? '' : value);
+  saveFirearmDraftSoon();
 };
 
 function renderCustomFields() {
@@ -3670,12 +5985,25 @@ function rotateImage(deg) { cropRotation = (cropRotation + deg) % 360; drawCropC
 function flipImage(dir) { if (dir === 'h') cropFlipH = !cropFlipH; else cropFlipV = !cropFlipV; drawCropCanvas(); }
 
 async function applyCrop() {
+  const session = captureAttachmentSession('formModal');
   const canvas = document.getElementById('cropCanvas');
   const newData = canvas.toDataURL('image/jpeg', 0.9);
-  imagesDb[cropImageId] = newData;
-  await idbPut(cropImageId, newData);
+  requireAttachmentSession(session);
+  const originalId = cropImageId;
+  const replacementId = generateId();
+  imagesDb[replacementId] = newData;
+  await idbPut(replacementId, newData);
+  if (!attachmentSessionActive(session)) {
+    delete imagesDb[replacementId];
+    try { await idbDelete(replacementId); } catch (_) {}
+    return;
+  }
+  tempImages = tempImages.map(id => id === originalId ? replacementId : id);
+  _firearmDraftOwnedImages.add(originalId);
+  _firearmDraftOwnedImages.add(replacementId);
   closeCropModal();
   renderImageGallery();
+  saveFirearmDraftSoon();
 }
 
 // =====================================================
@@ -4007,13 +6335,13 @@ function openStateDB() {
 }
 
 function statePut(key, value) {
-  return new Promise((resolve, reject) => {
+  return runCompatibilityWrite(() => new Promise((resolve, reject) => {
     const tx = stateStore.transaction(STATE_IDB_STORE, 'readwrite');
     const store = tx.objectStore(STATE_IDB_STORE);
     const req = store.put(value, key);
     req.onsuccess = () => resolve();
     req.onerror = (e) => reject(e);
-  });
+  }));
 }
 
 function stateGet(key) {
@@ -4024,6 +6352,15 @@ function stateGet(key) {
     req.onsuccess = () => resolve(req.result);
     req.onerror = (e) => reject(e);
   });
+}
+
+function stateDelete(key) {
+  return runCompatibilityWrite(() => new Promise((resolve, reject) => {
+    const tx = stateStore.transaction(STATE_IDB_STORE, 'readwrite');
+    const req = tx.objectStore(STATE_IDB_STORE).delete(key);
+    req.onsuccess = () => resolve();
+    req.onerror = (event) => reject(event);
+  }));
 }
 
 async function saveToLocalStorage() {
@@ -4053,8 +6390,13 @@ async function saveToLocalStorage() {
       return true;
     }
     if (queued && queued.localSafe) {
+      // The exact snapshot (including its retry record) is durable in the
+      // independent recovery database. It is therefore safe to finish the
+      // form save instead of rolling it back and later resurrecting it from
+      // that recovery queue. Startup promotes this entry back into the primary
+      // queue; the warning remains until cloud sync catches up.
       hasUnsavedChanges = false;
-      setSaveStatus('local');
+      setSaveStatus('local', 'Saved on this device - cloud queue needs retry');
       return true;
     }
   } else if (compatibilitySaved) {
@@ -4120,8 +6462,14 @@ function loadSortPreference() {
 // =====================================================
 // UNSAVED CHANGES WARNING
 // =====================================================
+function hasOpenDirtyForm() {
+  return !!document.querySelector('.modal-overlay.open[data-dirty="true"]:not(.app-dialog)');
+}
+let suppressUnsavedUnloadWarning = false;
+window.hasOpenDirtyForm = hasOpenDirtyForm;
+window.allowForcedPageTeardown = function () { suppressUnsavedUnloadWarning = true; };
 window.addEventListener('beforeunload', (e) => {
-  if (hasUnsavedChanges) {
+  if (!suppressUnsavedUnloadWarning && (hasUnsavedChanges || hasOpenDirtyForm())) {
     e.preventDefault();
     e.returnValue = 'Your latest change has not been saved on this device or in the cloud yet.';
     return e.returnValue;
@@ -4328,10 +6676,10 @@ function initDetailSwipe() {
     if (dots.length < 2) return;
     if (diff > 0 && currentImageIndex > 0) {
       currentImageIndex--;
-      dots[0].click();
+      dots[currentImageIndex].click();
     } else if (diff < 0 && currentImageIndex < dots.length - 1) {
       currentImageIndex++;
-      dots[0].click();
+      dots[currentImageIndex].click();
     }
   }, { passive: true });
 }
@@ -4369,10 +6717,18 @@ async function downloadRecoveryBackup(encrypted) {
     if (!approved) return;
   }
 
+  const actionButtons = Array.from(document.querySelectorAll('#backupModal .backup-actions button'));
+  actionButtons.forEach(button => { button.disabled = true; });
   try {
-    const fullCopy = Object.assign({}, db, { images: imagesDb });
+    const readiness = await ensureReferencedMediaReady({ retry: true });
+    if (!readiness.ok) {
+      warnIncompleteMedia(readiness, 'Full backup', { force: true });
+      return;
+    }
+    const referencedImages = getReferencedFirearmImages();
+    const fullCopy = Object.assign({}, db, { images: referencedImages });
     delete fullCopy.backups;
-    await VaultDataSafety.createBackup(CloudSync.uid, db, 'manual-download', { mediaCount: Object.keys(imagesDb || {}).length });
+    await VaultDataSafety.createBackup(CloudSync.uid, db, 'manual-download', { mediaCount: readiness.keys.length });
     const envelope = await VaultDataSafety.exportEnvelope(CloudSync.uid, fullCopy, encrypted ? password : null);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     downloadBlobFile(JSON.stringify(envelope, null, 2), 'firearms-vault-' + timestamp + (encrypted ? '.fvbackup' : '.json'));
@@ -4380,11 +6736,12 @@ async function downloadRecoveryBackup(encrypted) {
     document.getElementById('backupPasswordConfirm').value = '';
     addAuditEntry('create', 'system', 'Full Recovery Backup', encrypted ? 'Downloaded encrypted recovery backup' : 'Downloaded unencrypted recovery backup');
     await saveToLocalStorage();
-    setSaveStatus('saved', 'Backup downloaded and verified');
     toast(encrypted ? 'Encrypted recovery backup downloaded.' : 'Unencrypted recovery backup downloaded.', 'success');
     await openBackupModal();
   } catch (error) {
     toast('Backup failed: ' + error.message, 'error', 9000);
+  } finally {
+    actionButtons.forEach(button => { button.disabled = false; });
   }
 }
 
@@ -4405,7 +6762,7 @@ async function restoreDownloadedBackup() {
     });
     if (!approved) return;
 
-    await VaultDataSafety.createBackup(CloudSync.uid, db, 'before-file-restore', { mediaCount: Object.keys(imagesDb || {}).length });
+    await VaultDataSafety.createBackup(CloudSync.uid, db, 'before-file-restore', { mediaCount: Object.keys(getReferencedFirearmImages()).length });
     const normalizedFile = new File([JSON.stringify(parsed)], 'verified-backup.json', { type: 'application/json' });
     const result = await CloudSync.restoreFromFile(normalizedFile);
     input.value = '';
@@ -4424,22 +6781,28 @@ window.restoreDownloadedBackup = restoreDownloadedBackup;
 // Save all data to a JSON file on demand
 async function saveToFile() {
   try {
+    const readiness = await ensureReferencedMediaReady({ retry: true });
+    if (!readiness.ok) {
+      warnIncompleteMedia(readiness, 'File export', { force: true });
+      return;
+    }
     if (fileHandle) {
-      await writeToDisk();
+      await writeToDisk({ manual: true, readiness });
       return;
     }
     if ('showSaveFilePicker' in window) {
       fileHandle = await window.showSaveFilePicker({
         suggestedName: 'firearms_database.json',
-        types: [{ description: 'JSON Database', accept: { 'application/json': ['.json'] } }]
+          types: [{ description: 'JSON Database', accept: { 'application/json': ['.json'] } }]
       });
-      await writeToDisk();
+      const wrote = await writeToDisk({ manual: true, readiness });
+      if (!wrote) return;
       hasUnsavedChanges = false;
       document.getElementById('statusDot').className = 'file-status-dot connected';
       document.getElementById('fileStatusText').textContent = 'Connected:';
       document.getElementById('fileStatusName').textContent = fileHandle.name;
     } else {
-      const saveObj = Object.assign({}, db, { images: imagesDb });
+      const saveObj = Object.assign({}, db, { images: getReferencedFirearmImages() });
       const b = new Blob([JSON.stringify(saveObj, null, 2)], {type: 'application/json'});
       const u = URL.createObjectURL(b);
       const a = document.createElement('a');
@@ -4479,16 +6842,32 @@ async function bootApp(){
   }
 
   // Pull the latest data from the Supabase cloud (authoritative across devices)
+  let cloudLoad = null;
   if (window.CloudSync && CloudSync.uid) {
-    try { await CloudSync.pull(); }
-    catch (e) { console.warn('Cloud pull failed; using local cache.', e); }
+    try {
+      cloudLoad = await CloudSync.pull();
+    } catch (error) {
+      console.warn('Cloud pull failed unexpectedly; using the safest available device copy.', error);
+      const local = await CloudSync.loadCachedIntoMemory().catch(() => ({ ok: false }));
+      const offline = navigator.onLine === false;
+      const text = local.ok
+        ? (offline ? 'Offline - safe on this device' : 'Cloud unavailable - safe on this device')
+        : 'Changes not safe - no device copy is available';
+      CloudSync.ready = true;
+      CloudSync.setStatus(text, local.ok ? 'warning' : 'error', local.ok ? (offline ? 'offline' : 'local') : 'failed');
+      cloudLoad = { ok: !!local.ok, status: local.ok ? 'device-copy' : 'unavailable', localSafe: !!local.ok, error };
+      CloudSync.emit(local.ok ? 'local-safe' : 'failed', Object.assign({ operation: 'pull' }, cloudLoad));
+    }
   }
   normalizeRichTextData();
   normalizeInternalIds();
 
   // Show all UI elements immediately - no file picker needed
-  document.getElementById('statusDot').className = 'file-status-dot connected';
-  document.getElementById('fileStatusText').textContent = 'Cloud synced';
+  const usingDeviceCopy = cloudLoad && (cloudLoad.localSafe || cloudLoad.status === 'offline-local' || cloudLoad.status === 'device-copy');
+  document.getElementById('statusDot').className = 'file-status-dot ' + (usingDeviceCopy ? 'local' : (cloudLoad && !cloudLoad.ok ? 'disconnected' : 'connected'));
+  document.getElementById('fileStatusText').textContent = usingDeviceCopy
+    ? 'Using safe device copy'
+    : (cloudLoad && !cloudLoad.ok ? 'Cloud unavailable' : 'Cloud account connected');
   document.getElementById('fileStatusName').textContent = db.firearms.length + ' firearms loaded';
 
   document.getElementById('backupBtn').style.display = 'inline-block';

@@ -14,7 +14,10 @@ const exists = (p) => fs.existsSync(path.join(root, p));
 
 // Element IDs that are created dynamically at runtime (not static in HTML).
 const DYNAMIC_IDS = new Set(['welcomeOverlay', 'valueChartCanvas', 'typeChartCanvas', 'calChartCanvas', 'mfgChartCanvas',
-  'dealerSearch', 'dealerNoMatch', 'dealerShownCount']);
+  'dealerSearch', 'dealerNoMatch', 'dealerShownCount', 'updateBanner']);
+const DYNAMIC_SHARE_IDS = new Set([
+  'shareRetry', 'shareCodeForm', 'shareViewerCode', 'showShareCode', 'openShareButton', 'printShare'
+]);
 
 function divBalance(html, name) {
   const open = (html.match(/<div\b/gi) || []).length;
@@ -52,7 +55,8 @@ divBalance(index, 'index.html');
 checkLocalRefs(index, 'index.html');
 checkNoRemoteExecutableAssets(index, 'index.html');
 const staticIds = idsIn(index);
-const appRefs = new Set([...refsIn(read('js/app.js')), ...refsIn(read('js/auth.js'))]);
+const indexScripts = ['js/app.js', 'js/auth.js', 'js/cloud-sync.js', 'js/pwa-register.js', 'js/ui-shell.js'];
+const appRefs = new Set(indexScripts.flatMap((file) => [...refsIn(read(file))]));
 for (const id of appRefs) {
   if (!staticIds.has(id) && !DYNAMIC_IDS.has(id)) {
     errors.push(`index.html: getElementById("${id}") has no matching element`);
@@ -64,6 +68,10 @@ const share = read('share.html');
 divBalance(share, 'share.html');
 checkLocalRefs(share, 'share.html');
 checkNoRemoteExecutableAssets(share, 'share.html');
+const shareIds = idsIn(share);
+for (const id of refsIn(read('js/share.js'))) {
+  if (!shareIds.has(id) && !DYNAMIC_SHARE_IDS.has(id)) errors.push(`share.html: getElementById("${id}") has no matching element`);
+}
 
 // ---- service worker shell files must exist ----
 const sw = read('sw.js');

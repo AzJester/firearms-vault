@@ -3,28 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#1a3a5c">
-<meta name="description" content="Personal firearms collection database with cloud sync.">
+<meta name="theme-color" content="#101a22">
+<meta name="description" content="Firearms Vault — a private, cloud-synced collection manager.">
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
-<title>Personal Firearms Database</title>
+<title>Firearms Vault</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="css/fonts.css">
 <link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/vault-ui.css">
 <!-- Self-hosted dependencies: no third-party script can read the private app origin. -->
 <script src="vendor/supabase.js"></script>
 </head>
 <body>
-
 <!-- ===================== LOGIN GATE ===================== -->
 <div id="authOverlay" class="auth-overlay" style="display:none;">
   <div class="auth-card">
     <div class="auth-logo">&#128737;</div>
-    <h1>Firearms Database</h1>
-    <p class="auth-sub">Sign in to access your collection on any device.</p>
+    <h1>Firearms Vault</h1>
+    <p class="auth-sub">Your private collection, available on every trusted device.</p>
     <form id="authForm" autocomplete="on">
       <label for="authEmail">Email</label>
       <input id="authEmail" type="email" inputmode="email" autocomplete="username" required placeholder="you@example.com">
@@ -42,23 +42,24 @@
       <button id="mfaChallengeSubmit" type="submit" class="btn btn-primary auth-submit">Verify and open vault</button>
       <button type="button" id="mfaCancelBtn" class="auth-link">Use another account</button>
     </form>
-    <p class="auth-foot">Your data is private and encrypted in transit. Only you can see it.</p>
+    <p class="auth-foot">Private by default. Your data is encrypted in transit and requires your account to open.</p>
   </div>
 </div>
 
 <!-- ===================== APP (hidden until signed in) ===================== -->
 <div id="appRoot" style="display:none;">
+<a class="skip-link" href="#mainContent">Skip to collection</a>
 
 <!-- ===================== FIRST-RUN IMPORT ===================== -->
-<div id="firstRunPanel" class="firstrun-overlay" style="display:none;">
+<div id="firstRunPanel" class="firstrun-overlay" role="dialog" aria-modal="true" aria-labelledby="firstRunTitle" aria-describedby="firstRunDescription" style="display:none;">
   <div class="firstrun-card">
-    <h2>Welcome &#128075;</h2>
-    <p>Your cloud collection is empty. Import your existing data once and it will
-       sync to every device automatically.</p>
-    <label for="firstRunFile" class="btn btn-primary">Choose backup file (.json or .zip)</label>
-    <input id="firstRunFile" type="file" accept="application/json,.json,.zip,application/zip" style="display:none;">
-    <div id="firstRunStatus" class="firstrun-status"></div>
-    <button id="firstRunSkip" class="btn btn-outline btn-small">Skip &mdash; start empty</button>
+    <h2 id="firstRunTitle">Welcome to Firearms Vault</h2>
+    <p id="firstRunDescription">Bring in an existing backup, or start a new private collection. Your changes
+       will be saved on this device first and synchronized to your cloud account.</p>
+    <button id="firstRunChoose" type="button" class="btn btn-primary" data-initial-focus>Choose backup file (.json or .zip)</button>
+    <input id="firstRunFile" type="file" accept="application/json,.json,.zip,application/zip" data-no-dirty style="display:none;">
+    <div id="firstRunStatus" class="firstrun-status" role="status" aria-live="polite" aria-atomic="true"></div>
+    <button id="firstRunSkip" type="button" class="btn btn-outline btn-small">Skip &mdash; start empty</button>
   </div>
 </div>
 
@@ -112,6 +113,7 @@
       <hr class="backup-divider">
       <h3 class="backup-section-title">Restore a downloaded backup</h3>
       <p class="settings-help">Select an encrypted <code>.fvbackup</code> or full JSON backup. Enter its password above when required.</p>
+      <label for="recoveryBackupFile" class="file-input-label">Backup file</label>
       <input type="file" id="recoveryBackupFile" accept=".fvbackup,.json,application/json" class="file-input-visible">
       <button class="btn btn-danger" type="button" onclick="restoreDownloadedBackup()">Verify and restore file</button>
     </div>
@@ -190,7 +192,7 @@
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeMaintenanceModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveMaintenanceEntry()">Save Entry</button>
+      <button class="btn btn-primary" id="saveMaintenanceBtn" onclick="saveMaintenanceEntry()">Save Entry</button>
     </div>
   </div>
 </div>
@@ -259,9 +261,13 @@
 
 <!-- Header -->
 <div class="header">
-  <div style="display:flex;align-items:center;gap:12px;">
-    <h1>Personal Firearms Database</h1>
-    <span class="version-badge">v2.1 · Cloud</span>
+  <div class="header-brand">
+    <span class="header-brand-mark" aria-hidden="true">FV</span>
+    <div class="header-brand-copy">
+      <h1>Firearms Vault</h1>
+      <p>Private collection manager</p>
+    </div>
+    <span class="version-badge">v2.1 &middot; Cloud</span>
   </div>
   <div class="header-right">
     <div class="header-stats">
@@ -273,7 +279,7 @@
     <button class="bell-btn" id="cmdkBtn" onclick="openCmdK()" title="Search / commands (Ctrl or &#8984; K)" aria-label="Search"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
     <button class="bell-btn" id="reminderBell" onclick="openReminders()" title="Reminders" aria-label="Reminders"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="bell-badge" id="reminderBadge" style="display:none;">0</span></button>
     <button class="bell-btn" id="privacyToggle" type="button" title="Hide sensitive information" aria-label="Hide sensitive information" aria-pressed="false" onclick="togglePrivacyMode()"><span aria-hidden="true">&#128065;</span></button>
-    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark mode" aria-label="Toggle dark mode">&#9790;</button>
     <div class="menu" id="acctMenu">
       <button class="theme-toggle" data-menu-toggle title="Menu" aria-label="Account menu" aria-haspopup="true"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
       <div class="menu-panel menu-panel-right">
@@ -298,7 +304,8 @@
     <span id="authedEmail" class="authed-email"></span>
   </div>
   <div class="file-status-right">
-    <span id="syncStatus" class="sync-pill save-status" data-kind="syncing" role="status" aria-live="polite" aria-atomic="true">Connecting&hellip;</span>
+    <button type="button" id="syncStatus" class="sync-pill save-status" data-kind="syncing" onclick="openSyncCenter()" aria-haspopup="dialog">Connecting&hellip;</button>
+    <span id="syncStatusLive" class="sr-only" role="status" aria-live="polite" aria-atomic="true">Connecting&hellip;</span>
     <span class="save-indicator" id="saveIndicator" aria-hidden="true">Saved</span>
     <button class="btn btn-small btn-primary" onclick="openBackupModal()">Data &amp; Backups</button>
     <button class="btn btn-small btn-file" id="backupBtn" onclick="openBackupModal()" style="display:none;">Recovery Points</button>
@@ -312,20 +319,77 @@
   </div>
 </div>
 
-<!-- Tabs -->
-<div class="sticky-top">
-<nav class="tabs" role="tablist" aria-label="Inventory sections">
-  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="dashboard">Dashboard</button>
-  <button type="button" class="tab active" role="tab" aria-selected="true" tabindex="0" data-tab="all">All Firearms</button>
-  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="ammo">Ammunition</button>
-  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="accessories">Accessories</button>
-  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="nfa">NFA Items</button>
-  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="disposed">Disposed</button>
-  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="wishlist">Wishlist</button>
-  <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="dealers">FFL Dealers</button>
-</nav>
+<!-- Sync details and attachment recovery -->
+<div class="modal-overlay" id="syncCenterModal">
+  <div class="modal sync-center-modal">
+    <div class="modal-header">
+      <div>
+        <h2>Sync &amp; Recovery</h2>
+        <p class="sync-center-subtitle">Clear information about what is saved and anything that needs you.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeSyncCenter()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="sync-current-state">
+        <span>Current status</span>
+        <strong id="syncCenterCurrent">Checking&hellip;</strong>
+      </div>
+      <p id="syncCenterSummary" class="sync-center-summary">Checking sync details&hellip;</p>
+      <div id="syncIssueList" class="sync-issue-list" aria-live="polite"></div>
+      <div id="syncConflictActions" class="sync-conflict-actions" style="display:none;">
+        <h3>Choose only for the fields above</h3>
+        <p>No choice is made automatically. Unrelated changes from both devices are kept.</p>
+        <div>
+          <button type="button" class="btn btn-primary" onclick="resolveSyncChanges('device')">Use this device for listed fields</button>
+          <button type="button" class="btn btn-outline" onclick="resolveSyncChanges('cloud')">Use cloud for listed fields</button>
+        </div>
+      </div>
+      <input type="file" id="missingMediaFile" data-no-dirty hidden>
+    </div>
+    <div class="modal-footer sync-center-footer">
+      <button type="button" class="btn btn-outline" onclick="openBackupFromSyncCenter()">Data &amp; backups</button>
+      <button type="button" class="btn btn-primary" onclick="retrySyncFromCenter()">Try sync again</button>
+      <button type="button" class="btn btn-outline" onclick="closeSyncCenter()">Close</button>
+    </div>
+  </div>
+</div>
 
-<!-- Toolbar -->
+<div class="vault-layout">
+<aside class="vault-sidebar" aria-label="Primary navigation">
+  <p class="vault-sidebar-label">Collection</p>
+  <nav class="tabs" role="tablist" aria-label="Inventory sections" aria-orientation="vertical">
+    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="dashboard">Overview</button>
+    <button type="button" class="tab active" role="tab" aria-selected="true" tabindex="0" data-tab="all">Firearms</button>
+    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="nfa">NFA items</button>
+    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="disposed">Sold / transferred</button>
+    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="ammo">Ammunition</button>
+    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="accessories">Accessories</button>
+    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="wishlist">Wishlist</button>
+    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1" data-tab="dealers">FFL dealers</button>
+  </nav>
+  <div class="vault-sidebar-tools">
+    <p class="vault-sidebar-label">Manage</p>
+    <button type="button" class="vault-sidebar-action" onclick="openShareModal()">Share inventory</button>
+    <button type="button" class="vault-sidebar-action" onclick="openBackupModal()">Data &amp; recovery</button>
+    <button type="button" class="vault-sidebar-action" onclick="openSettingsModal()">Settings</button>
+  </div>
+</aside>
+
+<main class="vault-main" id="mainContent" tabindex="-1">
+<section class="page-heading" aria-labelledby="pageTitle">
+  <div class="page-heading-copy">
+    <p class="page-eyebrow">Private collection</p>
+    <h2 id="pageTitle">Firearms</h2>
+    <p id="pageDescription">Active firearms in your collection.</p>
+  </div>
+  <div class="page-heading-actions">
+    <span class="page-record-count" id="pageRecordCount" aria-live="polite">0 items</span>
+    <button type="button" class="btn btn-primary" id="pageAddBtn" onclick="ctxAdd()">Add firearm</button>
+  </div>
+</section>
+
+<!-- Contextual toolbar -->
+<div class="sticky-top">
 <div class="toolbar" id="mainToolbar">
   <input type="search" class="search-box" id="searchBox" aria-label="Search inventory" placeholder="Search by make, model, serial, caliber, tag...">
   <select class="filter-select" id="filterType">
@@ -470,6 +534,9 @@
   <button class="btn btn-primary" id="firstItemBtn" onclick="openAddModal()" style="display:none;">+ Add Your First Firearm</button>
 </div>
 
+</main>
+</div><!-- /.vault-layout -->
+
 <!-- Add/Edit Firearm Modal -->
 <div class="modal-overlay" id="formModal">
   <div class="modal">
@@ -533,6 +600,7 @@
             <span class="upload-text">Click to upload receipt</span>
           </div>
           <input type="file" id="fReceiptInput" accept="application/pdf,image/*" style="display:none" onchange="handleReceiptUpload(event,'f')">
+          <button type="button" class="btn btn-small btn-outline upload-remove-action" id="fReceiptRemove" onclick="removeReceipt('f')" hidden>Remove receipt</button>
         </div>
         <div class="form-group full">
           <label>Documents (manuals, bill of sale, Form 1/4, etc.)</label>
@@ -551,8 +619,8 @@
           <button type="button" class="btn btn-small btn-outline" onclick="addCustomField()" style="margin-top:6px;">+ Add Custom Field</button>
         </div>
         <div class="toggle-row">
-          <label class="toggle"><input type="checkbox" id="fIsNFA" onchange="toggleNFAFields()"><span class="slider"></span></label>
-          <span class="toggle-label">This is an NFA Item</span>
+          <label class="toggle"><input type="checkbox" id="fIsNFA" aria-labelledby="fIsNFALabel" onchange="toggleNFAFields()"><span class="slider"></span></label>
+          <span class="toggle-label" id="fIsNFALabel">This is an NFA Item</span>
         </div>
         <div id="nfaFields" style="display:none; grid-column:1/-1;">
           <div class="form-grid">
@@ -577,6 +645,7 @@
                 <span class="upload-text">Click to upload approved tax stamp PDF</span>
               </div>
               <input type="file" id="stampInput" accept="application/pdf" style="display:none" onchange="handleStampUpload(event)">
+              <button type="button" class="btn btn-small btn-outline upload-remove-action" id="stampRemove" onclick="removeStampPdf()" hidden>Remove tax stamp</button>
             </div>
           </div>
         </div>
@@ -611,7 +680,8 @@
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <span class="form-draft-status" id="formDraftStatus" role="status" aria-live="polite"></span>
+      <button class="btn btn-outline" onclick="closeModal()">Close</button>
       <button class="btn btn-primary" id="saveBtn" onclick="saveFirearm()">Save Firearm</button>
     </div>
   </div>
@@ -655,6 +725,7 @@
             <span class="upload-text">Click to upload receipt</span>
           </div>
           <input type="file" id="aReceiptInput" accept="application/pdf,image/*" style="display:none" onchange="handleReceiptUpload(event,'a')">
+          <button type="button" class="btn btn-small btn-outline upload-remove-action" id="aReceiptRemove" onclick="removeReceipt('a')" hidden>Remove receipt</button>
         </div>
       </div>
     </div>
@@ -737,6 +808,7 @@
             <span class="upload-text">Click to upload receipt</span>
           </div>
           <input type="file" id="accReceiptInput" accept="application/pdf,image/*" style="display:none" onchange="handleReceiptUpload(event,'acc')">
+          <button type="button" class="btn btn-small btn-outline upload-remove-action" id="accReceiptRemove" onclick="removeReceipt('acc')" hidden>Remove receipt</button>
         </div>
       </div>
     </div>
@@ -789,7 +861,7 @@
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeWishlistModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveWishlistItem()">Save</button>
+      <button class="btn btn-primary" id="saveWishlistBtn" onclick="saveWishlistItem()">Save</button>
     </div>
   </div>
 </div>
@@ -829,7 +901,7 @@
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeDealerModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveDealer()">Save Dealer</button>
+      <button class="btn btn-primary" id="saveDealerBtn" onclick="saveDealer()">Save Dealer</button>
     </div>
   </div>
 </div>
@@ -969,7 +1041,7 @@
   </div>
 </div>
 
-<div class="print-header" id="printHeader">Personal Firearms Inventory &mdash; Printed <span id="printDate"></span></div>
+<div class="print-header" id="printHeader">Firearms Vault inventory &mdash; Printed <span id="printDate"></span></div>
 
 <!-- Settings Modal -->
 <div class="modal-overlay" id="settingsModal">
@@ -1062,7 +1134,7 @@
         <div class="form-group full data-safety-panel">
           <div class="data-safety-heading">
             <div><h3>Data safety</h3><p class="settings-help">Local durability, pending changes, cloud revision, backup freshness, storage use, and running build.</p></div>
-            <div class="mfa-actions"><button type="button" class="btn btn-outline" onclick="runDataSafetyCheck()">Run safety check</button><button type="button" class="btn btn-outline" onclick="cleanUnusedMedia()">Clean unused media</button></div>
+            <div class="mfa-actions"><button type="button" class="btn btn-outline" onclick="runDataSafetyCheck()">Run safety check</button><button type="button" class="btn btn-outline" onclick="requestPersistentStorage()">Protect offline copy</button><button type="button" class="btn btn-outline" onclick="cleanUnusedMedia()">Clean unused media</button></div>
           </div>
           <dl class="data-safety-grid">
             <div><dt>Cloud</dt><dd id="safetyCloud">Checking&hellip;</dd></div>
@@ -1108,13 +1180,13 @@
 
 
 <!-- image lightbox -->
-<div id="lightbox" class="lightbox" style="display:none;" onclick="closeLightbox()">
-  <span class="lightbox-close" aria-label="Close">&times;</span>
+<div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Full-size image viewer" style="display:none;" onclick="closeLightbox()">
+  <button type="button" class="lightbox-close" aria-label="Close image viewer" onclick="event.stopPropagation();closeLightbox()">&times;</button>
   <img id="lightboxImg" src="" alt="">
 </div>
 <!-- Mobile bottom navigation -->
 <nav class="bottom-nav" id="bottomNav">
-  <button class="bn-item" data-bottomtab="dashboard"><span class="bn-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg></span><span class="bn-lbl">Dash</span></button>
+  <button class="bn-item" data-bottomtab="dashboard"><span class="bn-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg></span><span class="bn-lbl">Overview</span></button>
   <button class="bn-item" data-bottomtab="all"><span class="bn-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span><span class="bn-lbl">Firearms</span></button>
   <button class="bn-fab" id="bnFab" onclick="ctxAdd()" aria-label="Add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
   <button class="bn-item" data-bottomtab="ammo"><span class="bn-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span><span class="bn-lbl">Ammo</span></button>
@@ -1126,6 +1198,16 @@
       <button class="menu-item" data-bottomtab="disposed">&#128683; Disposed</button>
       <button class="menu-item" data-bottomtab="wishlist">&#11088; Wishlist</button>
       <button class="menu-item" data-bottomtab="dealers">&#127970; FFL Dealers</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" onclick="openShareModal()">Share inventory</button>
+      <button class="menu-item" onclick="openBackupModal()">Data &amp; recovery</button>
+      <button class="menu-item" onclick="openSettingsModal()">Settings</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" onclick="openReportBuilder()">Custom report</button>
+      <button class="menu-item" onclick="exportATFBoundBook()">ATF bound book</button>
+      <button class="menu-item" onclick="exportExcel()">Export Excel</button>
+      <button class="menu-item" onclick="exportJSON()">Export JSON</button>
+      <button class="menu-item" onclick="printInventory()">Print inventory</button>
     </div>
   </div>
 </nav>
@@ -1155,6 +1237,7 @@
 <script src="js/cloud-sync.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/action-runtime.js"></script>
+<script src="js/ui-shell.js"></script>
 <script src="js/pwa-register.js"></script>
 </body>
 </html>

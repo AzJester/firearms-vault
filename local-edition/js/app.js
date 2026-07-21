@@ -2236,7 +2236,7 @@ async function exportInsuranceReport() {
   if (db.firearms.length === 0) { toast('No firearms to export.'); return; }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
-  doc.setFontSize(16); doc.text('Personal Firearms Inventory Report', 14, 15);
+  doc.setFontSize(16); doc.text('Firearms Vault Inventory Report', 14, 15);
   doc.setFontSize(10); doc.text('Generated: ' + new Date().toLocaleString(), 14, 25);
   const rows = db.firearms.map(f => [f.make + ' ' + f.model, f.serial || '--', f.caliber || '--', f.type || '--', fmtDate(f.dateAcquired), f.price ? money(f.price) : '--', f.condition || '--']);
   doc.autoTable({ head: [['Make/Model', 'Serial #', 'Caliber', 'Type', 'Acquired', 'Price', 'Condition']], body: rows, startY: 35, theme: 'grid' });

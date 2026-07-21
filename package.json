@@ -3,12 +3,14 @@
   "version": "2.1.0",
   "private": true,
   "type": "module",
-  "description": "Personal Firearms Database — cloud-synced static web app.",
+  "description": "Firearms Vault — a private, cloud-synced collection manager.",
   "scripts": {
     "build": "node scripts/build.mjs",
     "validate": "node scripts/validate.mjs",
     "check:syntax": "node scripts/check-syntax.mjs",
     "check:budget": "node scripts/check-budget.mjs",
+    "check:production": "node scripts/check-production.mjs",
+    "check:supabase": "node scripts/check-supabase-health.mjs",
     "test:e2e": "playwright test",
     "test": "npm run check:syntax && npm run validate && npm run build && npm run check:budget && npm run test:e2e"
   },

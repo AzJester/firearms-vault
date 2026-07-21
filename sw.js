@@ -6,9 +6,9 @@ const RUNTIME_CACHE = `firearms-vault-runtime-${BUILD_ID}`;
 const CACHE_PREFIX = 'firearms-vault-';
 const CORE_SHELL = [
   './', './index.html', './share.html',
-  './css/fonts.css', './css/styles.css',
+  './css/fonts.css', './css/styles.css', './css/vault-ui.css',
   './js/config.js', './js/security.js', './js/data-safety.js', './js/asset-loader.js', './js/data-quality.js',
-  './js/supabase-client.js', './js/app.js', './js/cloud-sync.js', './js/auth.js', './js/action-runtime.js',
+  './js/supabase-client.js', './js/app.js', './js/cloud-sync.js', './js/auth.js', './js/action-runtime.js', './js/ui-shell.js',
   './js/pwa-register.js', './js/share.js',
   './vendor/supabase.js', './vendor/fonts/InterVariable.woff2',
   './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png'
@@ -51,7 +51,16 @@ self.addEventListener('message', (event) => {
 async function networkFirst(request, fallback) {
   try {
     const response = await fetch(request, { cache: 'no-cache' });
-    if (response.ok) (await caches.open(RUNTIME_CACHE)).put(request, response.clone()).catch(() => {});
+    if (response.ok) {
+      (await caches.open(RUNTIME_CACHE)).put(request, response.clone()).catch(() => {});
+      return response;
+    }
+    // A transient origin/CDN 5xx must not replace a previously complete app
+    // shell. Preserve normal 4xx responses so a genuinely missing route is not
+    // disguised as the vault.
+    if (response.status >= 500 && response.status <= 599) {
+      return (await caches.match(request)) || (fallback ? await caches.match(fallback) : null) || response;
+    }
     return response;
   } catch (_) {
     return (await caches.match(request)) || (fallback ? await caches.match(fallback) : null) || new Response('Offline', { status: 503 });

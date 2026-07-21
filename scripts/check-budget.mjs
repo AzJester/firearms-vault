@@ -3,9 +3,9 @@ import path from 'node:path';
 
 const dist = path.join(process.cwd(), 'dist');
 const core = [
-  'index.html', 'css/fonts.css', 'css/styles.css', 'js/config.js',
+  'index.html', 'css/fonts.css', 'css/styles.css', 'css/vault-ui.css', 'js/config.js',
   'js/security.js', 'js/data-safety.js', 'js/asset-loader.js', 'js/data-quality.js', 'js/supabase-client.js',
-  'js/app.js', 'js/cloud-sync.js', 'js/auth.js', 'js/action-runtime.js', 'js/pwa-register.js', 'vendor/supabase.js',
+  'js/app.js', 'js/cloud-sync.js', 'js/auth.js', 'js/action-runtime.js', 'js/ui-shell.js', 'js/pwa-register.js', 'vendor/supabase.js',
   'vendor/fonts/InterVariable.woff2', 'manifest.webmanifest', 'icons/icon.svg'
 ];
 const bytes = core.reduce((total, relative) => {

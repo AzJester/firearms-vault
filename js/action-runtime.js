@@ -13,7 +13,7 @@
     'closeCameraModal', 'closeCmdK', 'closeCropModal', 'closeDealerImportModal',
     'closeDealerModal', 'closeDetail', 'closeLightbox', 'closeMaintenanceModal',
     'closeModal', 'closePasswordModal', 'closeQRModal', 'closeReminders',
-    'closeReportBuilder', 'closeSettingsModal', 'closeShareModal', 'closeShortcutsModal',
+    'closeReportBuilder', 'closeSettingsModal', 'closeShareModal', 'closeShortcutsModal', 'closeSyncCenter',
     'closeWishlistModal', 'cmdkExec', 'cmdkHover', 'cmdkRender', 'copyShareLink', 'createShare',
     'ctxAdd', 'cycleWishlistPriority', 'deleteAccessory', 'deleteAmmo', 'deleteDealer',
     'deleteWishlistItem', 'downloadDocument', 'downloadQR', 'downloadRecoveryBackup', 'editAmmo',
@@ -22,19 +22,19 @@
     'handleImport', 'handlePasswordSubmit', 'handleReceiptUpload', 'handleStampUpload',
     'handleTagKey', 'importCSV', 'importDealersFromText', 'importJSON', 'loadAZDealers',
     'moveWishlistToCollection', 'openAccessoryModal', 'openAddAmmoModal', 'openAddModal',
-    'openBackupModal', 'openCameraModal', 'openCmdK', 'openCropModal',
+    'openBackupFromSyncCenter', 'openBackupModal', 'openCameraModal', 'openCmdK', 'openCropModal',
     'openDealerImportModal', 'openDealerModal', 'openDetail', 'openMaintenanceModal',
-    'openReminders', 'openReportBuilder', 'openSettingsModal', 'openShareModal',
+    'openReminders', 'openReportBuilder', 'openSettingsModal', 'openShareModal', 'openSyncCenter',
     'openWishlistModal', 'pickDispDealer', 'printInventory', 'printQR',
-    'quickAmmoAdjust', 'reminderGo', 'removeCustomField', 'removeDoc', 'removeEncryption',
+    'quickAmmoAdjust', 'reminderGo', 'removeCustomField', 'removeDoc', 'removeEncryption', 'requestPersistentStorage',
     'removeImage', 'removeMfaFactor', 'removeReceipt', 'removeStampPdf', 'removeTag',
-    'render', 'renderImageGallery', 'restoreDownloadedBackup', 'revokeShare', 'rotateImage', 'rteCmd', 'rteLink',
+    'render', 'renderImageGallery', 'resolveSyncChanges', 'restoreDownloadedBackup', 'retrySyncFromCenter', 'revokeShare', 'rotateImage', 'rteCmd', 'rteLink',
     'runDataQualityCheck', 'runDataSafetyCheck', 'saveAccessory', 'saveAmmo', 'saveDealer',
     'saveFirearm', 'saveMaintenanceEntry', 'saveToFile', 'saveWishlistItem',
     'searchScannedSerial', 'selectBackup', 'selectTagSuggestion', 'setDashRange',
     'setDealerArea', 'setDealerSort', 'setEncryption', 'setPrivacyMode', 'setView', 'setWishlistFilter',
     'showShortcutsHelp', 'showTagSuggestions', 'sortTable', 'toggleBulkSelect',
-    'toggleDealerFavorite', 'toggleFilters', 'toggleNFAFields', 'togglePrivacyMode',
+    'toggleDashboardAnalytics', 'toggleDealerFavorite', 'toggleFilters', 'toggleNFAFields', 'togglePrivacyMode',
     'toggleTheme', 'undoDelete', 'verifyMfaEnrollment', 'viewDocumentInBrowser',
     'viewReceiptInBrowser', 'viewStampPdf', 'window.print', 'Auth.signOut', 'CloudSync.syncNow'
   ]);
@@ -68,6 +68,8 @@
     if (value === 'event') return event;
     if (value === 'this.checked') return Boolean(element.checked);
     if (value === 'this.value') return element.value;
+    const datasetValue = /^this\.dataset\.([A-Za-z_$][\w$]*)$/.exec(value);
+    if (datasetValue) return String(element.dataset[datasetValue[1]] || '');
     throw new Error('Unsupported action value: ' + value);
   }
 

@@ -7,7 +7,7 @@
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
 <meta name="theme-color" content="#1a3a5c">
-<title>Shared Firearms Inventory</title>
+<title>Secure Share | Firearms Vault</title>
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="css/fonts.css">
 <link rel="stylesheet" href="css/styles.css">
@@ -15,17 +15,37 @@
 <style>
   body.share-body { background: var(--bg3); color: var(--text); padding: 24px 16px; }
   .share-view { max-width: 1100px; margin: 0 auto; }
-  .sv-msg { max-width: 460px; margin: 80px auto; text-align: center; background: var(--card-bg); border: 1px solid var(--border); border-radius: 14px; padding: 40px 28px; box-shadow: var(--shadow); color: var(--text2); }
+  .sv-site-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+  .sv-brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none; }
+  .sv-brand img { width: 38px; height: 38px; display: block; }
+  .sv-brand-copy { display: grid; gap: 1px; }
+  .sv-brand-name { font-size: 1rem; font-weight: 800; letter-spacing: -0.01em; }
+  .sv-brand-tag { color: var(--text3); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .sv-secure-label { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-light); border-radius: 999px; background: var(--card-bg); color: var(--text2); padding: 7px 10px; font-size: 0.74rem; font-weight: 700; }
+  .sv-msg { max-width: 520px; margin: 64px auto; background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 34px 30px; box-shadow: var(--shadow); color: var(--text2); }
+  .sv-state { text-align: center; }
+  .sv-state-icon { display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 16px; border-radius: 50%; background: var(--accent-light); color: var(--accent); font-size: 1.4rem; font-weight: 800; }
+  .sv-state h1 { margin: 0 0 10px; color: var(--text); font-size: 1.45rem; }
+  .sv-state p { margin: 0 auto; line-height: 1.55; }
+  .sv-state-help { margin-top: 12px !important; color: var(--text3); font-size: 0.82rem; }
+  .sv-state-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
+  .sv-state-actions .btn { text-decoration: none; }
   .sv-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
   .sv-header h1 { font-size: 1.5rem; color: var(--text); }
+  .sv-eyebrow { margin-bottom: 5px; color: var(--accent); font-size: 0.7rem; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; }
   .sv-meta { color: var(--text3); font-size: 0.8rem; margin-top: 4px; }
+  .sv-trust { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; margin: -4px 0 22px; padding: 13px 15px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--card-bg); }
+  .sv-trust-copy { color: var(--text2); font-size: 0.8rem; line-height: 1.45; }
+  .sv-trust-badges { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+  .sv-trust-badge { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 9px; border: 1px solid var(--border-light); border-radius: 999px; background: var(--bg2); color: var(--text2); font-size: 0.68rem; font-weight: 700; white-space: nowrap; }
+  .sv-trust-badge.is-private { border-color: var(--green); background: var(--green-bg); color: var(--green); }
   .sv-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 12px; margin-bottom: 24px; }
   .sv-kpi { background: var(--card-bg); border: 1px solid var(--border-light); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); }
   .sv-kpi .v { font-size: 1.4rem; font-weight: 800; color: var(--accent); }
   .sv-kpi .l { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text2); margin-top: 2px; }
   .sv-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px,1fr)); gap: 16px; }
   .sv-card { background: var(--card-bg); border: 1px solid var(--border-light); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
-  .sv-img { width: 100%; height: 190px; object-fit: contain; object-position: center; display: block; background: var(--bg3); }
+  .sv-img { width: 100%; height: 210px; padding: 8px; box-sizing: border-box; object-fit: contain; object-position: center; display: block; background: var(--bg3); }
   .sv-img-ph { display: flex; align-items: center; justify-content: center; color: var(--border); font-size: 3rem; }
   .sv-cbody { padding: 14px 16px; }
   .sv-title { font-weight: 700; font-size: 1rem; }
@@ -43,14 +63,23 @@
   .sv-table caption { text-align: left; font-size: 1.1rem; font-weight: 700; padding: 0 0 12px; color: var(--text); }
   .sv-footer { margin: 28px 0 8px; text-align: center; color: var(--text3); font-size: 0.74rem; }
   .sv-code-card h1 { color: var(--text); margin-bottom: 8px; }
+  .sv-code-card > p { line-height: 1.5; }
   .sv-code-card form { display: grid; gap: 10px; margin-top: 18px; text-align: left; }
   .sv-code-card input { min-height: 44px; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: var(--bg); color: var(--text); }
+  .sv-code-help { margin: -3px 0 2px; color: var(--text3); font-size: 0.76rem; line-height: 1.45; }
+  .sv-code-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .sv-show-code { border: 0; background: transparent; color: var(--accent); padding: 4px 0; font: inherit; font-size: 0.78rem; font-weight: 700; cursor: pointer; }
   .sv-code-error { color: var(--red); font-weight: 600; font-size: .82rem; }
   a:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   @media (max-width: 600px) {
     body.share-body { padding: 14px 12px; }
     .sv-header { align-items: center; margin-bottom: 14px; }
     .sv-header h1 { font-size: 1.25rem; }
+    .sv-site-header { margin-bottom: 16px; }
+    .sv-brand-tag, .sv-secure-label { display: none; }
+    .sv-msg { margin: 36px auto; padding: 28px 20px; }
+    .sv-trust { grid-template-columns: 1fr; }
+    .sv-trust-badges { justify-content: flex-start; }
     .sv-kpis { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
     .sv-kpi { padding: 12px; }
     .sv-cards { grid-template-columns: 1fr; gap: 12px; }

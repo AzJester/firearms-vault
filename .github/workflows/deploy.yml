@@ -59,19 +59,15 @@ jobs:
   production-smoke:
     needs: deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Verify production responds
-        run: |
-          set -euo pipefail
-          expected_revision="${GITHUB_SHA:0:12}"
-          for attempt in 1 2 3 4 5; do
-            if curl --fail --silent --show-error --location --max-time 20 https://vault.st-dba.com/ >/dev/null \
-              && build_info="$(curl --fail --silent --show-error --location --max-time 20 https://vault.st-dba.com/build-info.json)"; then
-              if printf '%s' "$build_info" | grep --fixed-strings --quiet "\"revision\": \"$expected_revision\""; then
-                printf '%s\n' "$build_info"
-                exit 0
-              fi
-            fi
-            sleep 10
-          done
-          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Verify production build, integrity, and response headers
+        env:
+          PRODUCTION_URL: https://vault.st-dba.com/
+          EXPECTED_REVISION: ${{ github.sha }}
+          SECURITY_HEADER_POLICY: ${{ vars.SECURITY_HEADER_POLICY || 'report' }}
+        run: node scripts/check-production.mjs

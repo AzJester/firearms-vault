@@ -32,6 +32,10 @@ test('login and empty application shell have no serious axe violations', async (
   await revealEmptyApp(page);
   const shell = await page.evaluate(async () => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } }));
   expect(shell.violations.filter(item => ['critical', 'serious'].includes(item.impact))).toEqual([]);
+
+  await page.evaluate(() => openSettingsModal());
+  const settings = await page.evaluate(async () => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } }));
+  expect(settings.violations.filter(item => ['critical', 'serious'].includes(item.impact))).toEqual([]);
   await context.close();
 });
 
@@ -69,15 +73,63 @@ test('mobile chrome stays compact and tables scroll inside their region', async 
   expect(measurements.tableTabIndex).toBe(0);
 });
 
-test('desktop tabs support arrow-key navigation', async ({ page }) => {
+test('application shell does not overflow at the release breakpoints', async ({ page }) => {
+  await mockSignedOutSupabase(page);
+  await page.goto('/index.html');
+  await revealEmptyApp(page);
+  for (const width of [360, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(() => render());
+    const size = await page.evaluate(() => ({
+      viewport: document.documentElement.clientWidth,
+      page: document.documentElement.scrollWidth,
+      toolbar: Math.round(document.querySelector('.toolbar')?.getBoundingClientRect().height || 0)
+    }));
+    expect(size.page, `page width at ${width}px`).toBeLessThanOrEqual(size.viewport + 1);
+    expect(size.toolbar, `toolbar height at ${width}px`).toBeLessThanOrEqual(width <= 768 ? 180 : 90);
+  }
+});
+
+test('populated dark inventory, detail gallery, and dealer views have no serious axe violations', async ({ browser }) => {
+  const context = await browser.newContext({ bypassCSP: true });
+  const page = await context.newPage();
+  await mockSignedOutSupabase(page);
+  await page.goto('/index.html');
+  await revealEmptyApp(page);
+  await page.addScriptTag({ path: axePath });
+  await page.evaluate(() => {
+    const image = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22800%22 height=%22200%22%3E%3Crect width=%22800%22 height=%22200%22 fill=%22%23555%22/%3E%3C/svg%3E';
+    imagesDb['fixture-one'] = image;
+    imagesDb['fixture-two'] = image;
+    db.firearms = [
+      { id: 'approved-fixture', make: 'Example', model: 'Approved', type: 'Rifle', caliber: '5.56', status: 'Active', isNFA: true, nfaType: 'SBR', stampStatus: 'Approved', images: ['fixture-one', 'fixture-two'], tags: [] },
+      { id: 'submitted-fixture', make: 'Example', model: 'Submitted', type: 'Silencer', caliber: '9mm', status: 'Active', isNFA: true, nfaType: 'Suppressor', stampStatus: 'Submitted', images: [], tags: [] },
+      { id: 'disposed-fixture', make: 'Example', model: 'Disposed', type: 'Pistol', caliber: '9mm', status: 'Sold', images: [], tags: [] }
+    ];
+    db.dealers = [{ id: 'dealer-fixture', name: 'Example FFL', address: 'Phoenix, AZ', favorite: true, website: 'https://example.com' }];
+    document.documentElement.setAttribute('data-theme', 'dark');
+    render();
+  });
+  const serious = result => result.violations.filter(item => ['critical', 'serious'].includes(item.impact));
+  expect(serious(await page.evaluate(async () => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })))).toEqual([]);
+
+  await page.evaluate(() => openDetail('approved-fixture'));
+  expect(serious(await page.evaluate(async () => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })))).toEqual([]);
+  await page.evaluate(() => closeDetail());
+  await page.locator('.tab[data-tab="dealers"]').click();
+  expect(serious(await page.evaluate(async () => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })))).toEqual([]);
+  await context.close();
+});
+
+test('desktop navigation rail supports vertical arrow-key navigation', async ({ page }) => {
   await mockSignedOutSupabase(page);
   await page.goto('/index.html');
   await revealEmptyApp(page);
 
   const activeTab = page.locator('.tab[data-tab="all"]');
-  const nextTab = page.locator('.tab[data-tab="ammo"]');
+  const nextTab = page.locator('.tab[data-tab="nfa"]');
   await activeTab.focus();
-  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowDown');
   await expect(nextTab).toBeFocused();
   await expect(nextTab).toHaveAttribute('aria-selected', 'true');
 });

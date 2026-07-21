@@ -8,7 +8,8 @@ Production: `https://vault.st-dba.com/`
 2. Merge or push the reviewed commit to `main`.
 3. The `Test and deploy to GitHub Pages` workflow installs pinned dependencies,
    validates and builds `dist/`, tests that exact artifact, then deploys it.
-4. A production smoke job verifies the vault and its `build-info.json`.
+4. A production smoke job verifies the vault shell, expected Git revision,
+   content types, `integrity-manifest.json` hashes, and response-header policy.
 5. Confirm the application reports the expected build and a successful sync.
 
 A failed validation or browser test prevents deployment. The build also emits
@@ -53,6 +54,9 @@ isolated Apache document root before considering the header work complete.
 After a hosting change, verify response headers for `/`, `/sw.js`, and
 `/js/config.js`; the latter two must revalidate rather than remain publicly
 cached for long periods. Verify a different origin cannot frame the vault.
+Then set the GitHub repository variable `SECURITY_HEADER_POLICY` to `required`.
+It defaults to `report` while GitHub Pages remains the origin, so the deployment
+summary exposes every gap without blocking an otherwise valid release.
 
 ## Recovery drill
 
@@ -72,7 +76,42 @@ the collection requires guaranteed recovery.
 
 ## Monitoring canary
 
-The scheduled workflow runs an anonymous privacy/reachability check every three
-days. When dedicated canary credentials are configured as GitHub secrets, it
-also authenticates and writes/deletes a row in `health_checks`. Workflow failure
-notifications are the operational alert; the canary never accesses inventory.
+The scheduled workflow runs daily. It always performs the basic
+reachability and anonymous-privacy request first, so the project is contacted
+even if the authenticated monitor is not configured. It then runs in
+`production` mode and fails closed unless a dedicated canary account is
+configured with these GitHub repository secrets:
+
+- `SUPABASE_CANARY_EMAIL`
+- `SUPABASE_CANARY_PASSWORD`
+
+The account should be used only for monitoring, have no collection data, and
+must not opt in to account-level TOTP because this non-interactive password
+probe cannot complete an AAL2 challenge. Give it a unique random password.
+
+Each run verifies Auth reachability, anonymous RLS, the isolated
+`run_health_check_canary` database write/delete RPC, and a private Storage
+upload/download/SHA-256/delete cycle in the `media` bucket. It also proves the
+temporary object is rejected through both the public-object route and an
+anonymous Supabase session. A cleanup attempt is made after every partial
+Storage failure. Workflow failure notifications are the operational alert; no
+inventory table or inventory object is accessed.
+
+Because GitHub disables schedules in inactive public repositories after 60
+days, a second monthly schedule refreshes `.github/supabase-monitor-heartbeat`
+on `main`. This is a best-effort activity marker and will fail visibly if branch
+protection or token permissions prevent the push. Supabase Free can still pause
+projects it judges insufficiently active; only a paid plan guarantees that
+inactivity pausing is disabled.
+
+The health script emits stable stages and exit codes for alert routing:
+
+| Exit | Stage |
+| ---: | --- |
+| 2 | Configuration or missing production credentials |
+| 3 | Auth/project reachability |
+| 4 | Anonymous privacy/RLS |
+| 5 | Canary authentication |
+| 6 | Database write/delete |
+| 7 | Storage upload/download/checksum/delete |
+| 8 | Cleanup failure with possible orphaned canary object |

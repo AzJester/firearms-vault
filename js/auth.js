@@ -16,10 +16,13 @@
   const mfaSubmit = document.getElementById('mfaChallengeSubmit');
   const mfaErrEl = document.getElementById('mfaChallengeError');
   let booted = false;
+  let bootPromise = null;
+  let startingUserId = null;
   let activeUserId = null;
   let pendingMfa = null;
   let enrollmentFactorId = null;
   let ignoreNextSignedOut = false;
+  let forcedSignOutInProgress = false;
   let passwordRecoveryMode = false;
 
   function showError(msg) {
@@ -131,35 +134,68 @@
 
   async function startApp(session) {
     if (!session || !session.user || !session.user.id) throw new Error('The signed-in session is missing its user id.');
-    if (booted && activeUserId === session.user.id) {
+    const uid = session.user.id;
+    if (booted && activeUserId === uid) {
       overlay.style.display = 'none';
       appRoot.style.display = '';
       busy(false);
       return;
     }
-    const activation = await CloudSync.activateUser(session.user.id);
-    if (!activation.ok) {
-      overlay.style.display = 'flex';
+    if ((booted && activeUserId && activeUserId !== uid) || (bootPromise && startingUserId && startingUserId !== uid)) {
+      // A same-document account switch must never reuse the previous user's
+      // in-memory collection or media. Reload into the new authenticated
+      // session before revealing any vault UI.
       appRoot.style.display = 'none';
-      throw new Error('This account could not be opened safely: ' + activation.error.message);
+      overlay.style.display = 'flex';
+      location.reload();
+      return new Promise(() => {});
     }
-    activeUserId = session.user.id;
+    appRoot.style.display = 'none';
+    overlay.style.display = 'flex';
+    if (!bootPromise) {
+      startingUserId = uid;
+      bootPromise = (async () => {
+        const activation = await CloudSync.activateUser(uid);
+        if (!activation.ok) throw new Error('This account could not be opened safely: ' + activation.error.message);
+        activeUserId = uid;
+        document.getElementById('authedEmail').textContent = session.user.email || '';
+        const se = document.getElementById('settingsEmail'); if (se) se.textContent = session.user.email || '';
+        await window.bootApp();          // loads local cache + pulls from cloud + renders
+        let recoveredForm = { restored: false };
+        if (typeof window.restoreOpenDirtyFormSession === 'function') {
+          try { recoveredForm = await window.restoreOpenDirtyFormSession(uid); }
+          catch (error) { console.warn('An unfinished form could not be restored:', error); }
+        }
+        if (!recoveredForm || !recoveredForm.restored) maybeOfferImport();
+        booted = true;
+      })();
+    }
+    try {
+      await bootPromise;
+    } catch (error) {
+      booted = false;
+      activeUserId = null;
+      await CloudSync.deactivateUser({ clearRuntime: true }).catch(() => {});
+      throw error;
+    } finally {
+      bootPromise = null;
+      startingUserId = null;
+    }
     overlay.style.display = 'none';
     appRoot.style.display = '';
     busy(false);
-    document.getElementById('authedEmail').textContent = session.user.email || '';
-    const se = document.getElementById('settingsEmail'); if (se) se.textContent = session.user.email || '';
-    if (!booted) {
-      booted = true;
-      await window.bootApp();          // loads local cache + pulls from cloud + renders
-      maybeOfferImport();
-    }
   }
 
   // If there is no cloud data yet AND nothing locally, offer a one-time import.
+  function firstRunDismissedKey() {
+    return activeUserId ? 'fv:first-run-dismissed:' + activeUserId : 'fv:first-run-dismissed';
+  }
+
   function maybeOfferImport() {
     const empty = (db.firearms.length + db.ammo.length + db.accessories.length) === 0;
-    if (!CloudSync.hasCloudData && empty) {
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(firstRunDismissedKey()) === '1'; } catch (_) {}
+    if (!CloudSync.hasCloudData && empty && !dismissed) {
       document.getElementById('firstRunPanel').style.display = 'flex';
     }
   }
@@ -186,16 +222,22 @@
 
   // ---- first-run import wiring ----
   const importInput = document.getElementById('firstRunFile');
+  const importChoose = document.getElementById('firstRunChoose');
+  if (importChoose && importInput) {
+    importChoose.addEventListener('click', () => importInput.click());
+  }
   if (importInput) {
     importInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       const status = document.getElementById('firstRunStatus');
+      status.setAttribute('aria-busy', 'true');
       status.textContent = 'Reading file…';
       try {
         const res = await CloudSync.restoreFromFile(file);
         status.textContent = '';
         document.getElementById('firstRunPanel').style.display = 'none';
+        try { localStorage.setItem(firstRunDismissedKey(), '1'); } catch (_) {}
         const suffix = res.cloud && res.cloud.ok
           ? 'The restored copy is saved in the cloud.'
           : 'The restored copy is safe on this device and will retry cloud sync.';
@@ -203,12 +245,15 @@
               res.accessories + ' accessories, ' + res.images + ' photos.\n' + suffix, 'success');
       } catch (err) {
         status.textContent = 'Import failed: ' + err.message;
+      } finally {
+        status.setAttribute('aria-busy', 'false');
       }
       e.target.value = '';
     });
   }
   const skipBtn = document.getElementById('firstRunSkip');
   if (skipBtn) skipBtn.addEventListener('click', () => {
+    try { localStorage.setItem(firstRunDismissedKey(), '1'); } catch (_) {}
     document.getElementById('firstRunPanel').style.display = 'none';
   });
 
@@ -400,6 +445,23 @@
         : confirm('Sign out of this device? Pending changes will be secured locally or in the cloud first.');
       if (!okSignOut) return { ok: false, status: 'cancelled' };
 
+      const draftSafe = typeof window.flushFirearmDraft === 'function'
+        ? await window.flushFirearmDraft()
+        : true;
+      if (!draftSafe) {
+        const message = 'Sign out was stopped because an open draft or attachment could not be saved on this device. Keep this page open and retry.';
+        if (window.toast) toast(message, 'error', 9000);
+        else showError(message);
+        return { ok: false, status: 'unsafe-draft' };
+      }
+      const dirtyDialog = document.querySelector('.modal-overlay.open[data-dirty="true"]:not(.app-dialog)');
+      if (dirtyDialog) {
+        const message = 'Finish, save, or discard the open form before signing out.';
+        if (window.toast) toast(message, 'error', 9000);
+        else showError(message);
+        return { ok: false, status: 'open-form' };
+      }
+
       const safety = await CloudSync.prepareForSignOut();
       if (!safety.ok) {
         const message = 'Sign out was stopped because your latest changes could not be saved on this device or in the cloud. Keep this page open and retry.';
@@ -410,8 +472,9 @@
 
       const runtimeSafe = await CloudSync.clearRuntimeCaches();
       if (!runtimeSafe.ok) {
-        const message = 'Sign out was stopped because this browser could not clear its compatibility cache safely. Close other vault tabs and retry.';
+        const message = 'Sign out was stopped because this browser could not clear its compatibility cache safely. This page will reload; close other vault tabs and retry.';
         if (window.toast) toast(message, 'error', 9000);
+        setTimeout(() => location.reload(), 1200);
         return { ok: false, status: 'runtime-cleanup-failed', failures: runtimeSafe.failures };
       }
 
@@ -419,9 +482,10 @@
       const { error } = await sb.auth.signOut({ scope: 'local' });
       if (error) {
         ignoreNextSignedOut = false;
-        const message = 'Could not sign out: ' + prettyError(error);
+        const message = 'Could not sign out: ' + prettyError(error) + ' This page will reload your protected device copy.';
         if (window.toast) toast(message, 'error', 8000);
         else showError(message);
+        setTimeout(() => location.reload(), 1200);
         return { ok: false, status: 'auth-error', error };
       }
       const cleared = await CloudSync.deactivateUser({ clearRuntime: false });
@@ -447,6 +511,8 @@
         await attempt('media index', async () => { media = await CloudSync.getUserMedia(uid); });
         for (const item of media) await attempt('cached media', () => CloudSync.storeDelete('media', item.id));
         if (window.VaultDataSafety) await attempt('recovery records', () => window.VaultDataSafety.clearState(uid));
+        if (window.clearFirearmDraftForUser) await attempt('unfinished firearm draft', () => window.clearFirearmDraftForUser(uid));
+        if (window.clearOpenFormRecoveryForUser) await attempt('unfinished form recovery', () => window.clearOpenFormRecoveryForUser(uid));
 
         await attempt('cleanup verification', async () => {
           const [outbox, cache, remainingMedia] = await Promise.all([
@@ -455,7 +521,8 @@
           const safetyState = window.VaultDataSafety ? await window.VaultDataSafety.getState(uid) : null;
           const safetyOutbox = window.VaultDataSafety ? await window.VaultDataSafety.listOutbox(uid) : [];
           const backups = window.VaultDataSafety ? await window.VaultDataSafety.listBackups(uid) : [];
-          if (outbox || cache || remainingMedia.length || safetyState || safetyOutbox.length || backups.length) {
+          const unfinishedForm = window.hasOpenFormRecoveryForUser ? await window.hasOpenFormRecoveryForUser(uid) : false;
+          if (outbox || cache || remainingMedia.length || safetyState || safetyOutbox.length || backups.length || unfinishedForm) {
             throw new Error('User-scoped records remain after deletion.');
           }
         });
@@ -463,11 +530,18 @@
       if (failures.length) return { ok: false, status: 'local-cleanup-incomplete', failures };
 
       const runtimeSafe = await CloudSync.clearRuntimeCaches();
-      if (!runtimeSafe.ok) return { ok: false, status: 'runtime-cleanup-incomplete', failures: runtimeSafe.failures };
+      if (!runtimeSafe.ok) {
+        setTimeout(() => location.reload(), 1200);
+        return { ok: false, status: 'runtime-cleanup-incomplete', failures: runtimeSafe.failures };
+      }
 
       ignoreNextSignedOut = true;
       const { error } = await sb.auth.signOut({ scope: 'local' });
-      if (error) { ignoreNextSignedOut = false; return { ok: false, status: 'auth-error', error }; }
+      if (error) {
+        ignoreNextSignedOut = false;
+        setTimeout(() => location.reload(), 1200);
+        return { ok: false, status: 'auth-error', error };
+      }
       const deactivated = await CloudSync.deactivateUser({ clearRuntime: false });
       if (!deactivated.ok) {
         appRoot.style.display = 'none';
@@ -501,12 +575,57 @@
     sb.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
         if (ignoreNextSignedOut) { ignoreNextSignedOut = false; return; }
+        if (forcedSignOutInProgress) return;
+        forcedSignOutInProgress = true;
+        const outgoingUid = activeUserId || CloudSync.uid;
+        const outgoingDirtyForm = document.querySelector('.modal-overlay.open[data-dirty="true"]:not(.app-dialog)');
+        const retainOutgoingDirtyForm = () => {
+          if (!outgoingDirtyForm || !outgoingDirtyForm.classList.contains('open')) return;
+          outgoingDirtyForm.dataset.dirty = 'true';
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (outgoingDirtyForm.classList.contains('open')) outgoingDirtyForm.dataset.dirty = 'true';
+          }));
+        };
         appRoot.style.display = 'none';
         overlay.style.display = 'flex';
         pendingMfa = null;
         clearMfaEnrollmentUI();
         setTimeout(async () => {
+          if (typeof window.waitForActiveFormSave === 'function') {
+            const settled = await window.waitForActiveFormSave(12000).catch(() => ({ ok: false }));
+            if (!settled.ok) {
+              form.style.display = 'block';
+              if (mfaForm) mfaForm.style.display = 'none';
+              retainOutgoingDirtyForm();
+              showError('A save is still finishing. This tab was kept open to protect it. Sign back in to the same account, then retry.');
+              forcedSignOutInProgress = false;
+              return;
+            }
+          }
+          if (outgoingUid && typeof window.preserveOpenDirtyFormSession === 'function') {
+            const formSafe = await window.preserveOpenDirtyFormSession(outgoingUid).catch(() => ({ ok: false }));
+            if (!formSafe.ok) {
+              console.warn('The open form could not be fully secured before remote sign-out cleanup.');
+              form.style.display = 'block';
+              if (mfaForm) mfaForm.style.display = 'none';
+              retainOutgoingDirtyForm();
+              showError('Your unfinished form could not be saved on this device. Keep this tab open and sign back in to the same account before continuing.');
+              forcedSignOutInProgress = false;
+              return;
+            }
+          }
+          if (typeof window.flushFirearmDraft === 'function') {
+            const draftSafe = await window.flushFirearmDraft().catch(() => false);
+            if (!draftSafe) console.warn('The open firearm draft could not be fully secured before remote sign-out cleanup.');
+          }
+          booted = false;
+          bootPromise = null;
+          startingUserId = null;
+          activeUserId = null;
           await CloudSync.deactivateUser({ clearRuntime: true }).catch(() => {});
+          booted = false;
+          activeUserId = null;
+          if (typeof window.allowForcedPageTeardown === 'function') window.allowForcedPageTeardown();
           location.reload();
         }, 0);
       } else if (event === 'PASSWORD_RECOVERY' && session) {
