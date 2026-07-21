@@ -15,10 +15,11 @@ published from this repository through a test-gated GitHub Pages workflow.
 Open registration is disabled; access is limited to accounts created by the
 administrator.
 
-Version 2.1 adds the data-safety foundation: user-scoped durable local state,
-a persistent pending-change queue, revision-aware cloud synchronization,
-versioned recovery points, strict import/rich-text validation, quieter and more
-truthful save states, a smaller PWA shell, and expanded regression checks.
+Version 2.2 adds Collection Health, searchable field-by-field activity history
+with single-record restore, mobile Quick Capture, encrypted insurance/theft
+packages with redacted share copies, and verified weekly encrypted backups to a
+user-selected folder outside Supabase. Version 2.1 established the underlying
+durable local state, pending-change queue, and revision-aware cloud sync.
 
 ## Architecture
 
@@ -53,6 +54,11 @@ storage cannot access the vault origin.
 - Account changes never hydrate another account's local collection.
 - Full recovery backups carry a format version and SHA-256 integrity check and
   can optionally be encrypted with AES-256-GCM.
+- Independent weekly backups use a device-local non-extractable key plus a
+  password-wrapped recovery key, reopen and restore-validate every written file,
+  and retain only verified files owned by that backup installation. Browser
+  scheduling runs when the vault is open; it cannot guarantee a closed-browser
+  background job.
 
 ## Security controls
 

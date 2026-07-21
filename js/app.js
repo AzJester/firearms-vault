@@ -1,7 +1,7 @@
 // =====================================================
 // APP VERSION
 // =====================================================
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 
 // =====================================================
 // DATA STRUCTURE & STATE
@@ -840,6 +840,10 @@ function cmdkCommands() {
     { icon: '📈', label: 'Custom Report', kw: 'export report builder', run: openReportBuilder },
     { icon: '📓', label: 'ATF Bound Book', kw: 'export atf', run: exportATFBoundBook },
     { icon: '📷', label: 'Scan Serial', kw: 'camera ocr', run: openCameraModal },
+    { icon: '📸', label: 'Mobile Quick Capture', kw: 'camera photo receipt tax stamp ocr', run: () => window.openQuickCaptureModal() },
+    { icon: '✓', label: 'Collection Health', kw: 'quality fix duplicate typo missing attachments', run: () => window.openCollectionHealth() },
+    { icon: '↺', label: 'Activity History', kw: 'audit changes restore record', run: () => window.openActivityCenter() },
+    { icon: '🛡️', label: 'Insurance / Theft Package', kw: 'encrypted report redacted evidence', run: () => window.openReportPackageModal() },
     { icon: '📗', label: 'Export to Excel', kw: 'xlsx download', run: exportExcel },
     { icon: '⬇️', label: 'Export JSON', kw: 'backup download', run: exportJSON },
     { icon: '🔗', label: 'Share inventory', kw: 'insurance link', run: openShareModal },
@@ -1127,15 +1131,19 @@ function loadTheme() {
 // =====================================================
 // AUDIT TRAIL
 // =====================================================
-function addAuditEntry(action, itemType, itemName, details) {
+function addAuditEntry(action, itemType, itemName, details, metadata) {
   if (!db.auditTrail) db.auditTrail = [];
-  db.auditTrail.push({
-    timestamp: new Date().toISOString(),
-    action: action, // 'create', 'edit', 'delete'
-    itemType: itemType, // 'firearm', 'ammo', 'accessory', 'maintenance'
-    itemName: itemName,
-    details: details || ''
-  });
+  const entry = window.VaultActivity
+    ? VaultActivity.createEntry(action, itemType, itemName, details, metadata)
+    : {
+        id: generateId(),
+        timestamp: new Date().toISOString(),
+        action: action, // 'create', 'edit', 'delete'
+        itemType: itemType, // 'firearm', 'ammo', 'accessory', 'maintenance'
+        itemName: itemName,
+        details: details || ''
+      };
+  db.auditTrail.push(entry);
   // Keep last 500 entries
   if (db.auditTrail.length > 500) db.auditTrail = db.auditTrail.slice(-500);
 }
@@ -1634,6 +1642,7 @@ async function openBackupModal() {
   const list = document.getElementById('backupList');
   list.innerHTML = '<p class="backup-empty" role="status">Loading recovery points&hellip;</p>';
   document.getElementById('backupModal').classList.add('open');
+  if (window.IndependentBackupVault) IndependentBackupVault.refreshStatus().catch(() => {});
   durableBackupList = [];
   let readError = null;
   try {
@@ -4120,19 +4129,26 @@ async function saveFirearm() {
     // Capture the rollback point only after any conflict dialog has resolved;
     // cloud updates may have arrived while that dialog was open.
     const previousDatabase = structuredClone(db);
+    const previousRecord = editingId ? previousDatabase.firearms.find(f => f.id === editingId) || null : null;
     const itemName = ((data.make || '') + ' ' + (data.model || '')).trim();
     if (editingId) {
       const changes = editResult.localFields || [];
-      addAuditEntry('edit', 'firearm', itemName, changes.length > 0 ? 'Changed: ' + changes.join(', ') : 'Updated');
+      addAuditEntry('edit', 'firearm', itemName, changes.length > 0 ? 'Changed: ' + changes.join(', ') : 'Updated', {
+        collection: 'firearms', recordId: data.id, before: previousRecord, after: data
+      });
       const i=db.firearms.findIndex(f=>f.id===editingId);
       if(i>-1) db.firearms[i]=data; else db.firearms.push(data);
     } else {
-      addAuditEntry('create', 'firearm', itemName, '');
+      addAuditEntry('create', 'firearm', itemName, '', {
+        collection: 'firearms', recordId: data.id, before: null, after: data
+      });
       db.firearms.push(data);
       if (pendingWishlistMoveId) {
         const source = db.wishlist.find(item => item.id === pendingWishlistMoveId);
         db.wishlist = db.wishlist.filter(item => item.id !== pendingWishlistMoveId);
-        if (source) addAuditEntry('delete', 'wishlist', ((source.make || '') + ' ' + (source.model || '')).trim(), 'Moved to collection');
+        if (source) addAuditEntry('delete', 'wishlist', ((source.make || '') + ' ' + (source.model || '')).trim(), 'Moved to collection', {
+          collection: 'wishlist', recordId: source.id, before: source, after: null
+        });
       }
     }
 
@@ -4421,12 +4437,17 @@ async function saveAmmo() {
       data = editResult.record;
     }
     const previousDatabase = structuredClone(db);
+    const previousRecord = editingAmmoId ? previousDatabase.ammo.find(a => a.id === editingAmmoId) || null : null;
     const itemName = (data.brand || data.caliber);
     if (editingAmmoId) {
-      addAuditEntry('edit', 'ammo', itemName, '');
+      addAuditEntry('edit', 'ammo', itemName, '', {
+        collection: 'ammo', recordId: data.id, before: previousRecord, after: data
+      });
       const i = db.ammo.findIndex(a => a.id === editingAmmoId); if (i > -1) db.ammo[i] = data; else db.ammo.push(data);
     } else {
-      addAuditEntry('create', 'ammo', itemName, '');
+      addAuditEntry('create', 'ammo', itemName, '', {
+        collection: 'ammo', recordId: data.id, before: null, after: data
+      });
       db.ammo.push(data);
     }
     const attemptedDatabase = structuredClone(db);
@@ -4443,9 +4464,12 @@ async function quickAmmoAdjust(id, direction) {
   if (!amt || isNaN(parseInt(amt))) return;
   const a = db.ammo.find(x => x.id === id);
   if (!a) return;
+  const before = structuredClone(a);
   const qty = Math.max(0, (parseInt(a.quantity)||0) + (parseInt(amt) * direction));
   a.quantity = String(qty);
-  addAuditEntry('edit','ammo',(a.brand||a.caliber),'Quantity '+(direction>0?'+':'-')+amt+' = '+qty);
+  addAuditEntry('edit','ammo',(a.brand||a.caliber),'Quantity '+(direction>0?'+':'-')+amt+' = '+qty, {
+    collection: 'ammo', recordId: a.id, before, after: a
+  });
   await saveData(); render();
 }
 
@@ -4535,11 +4559,16 @@ async function saveAccessory() {
       data = editResult.record;
     }
     const previousDatabase = structuredClone(db);
+    const previousRecord = editingAccessoryId ? previousDatabase.accessories.find(a => a.id === editingAccessoryId) || null : null;
     if (editingAccessoryId) {
-      addAuditEntry('edit', 'accessory', data.name, '');
+      addAuditEntry('edit', 'accessory', data.name, '', {
+        collection: 'accessories', recordId: data.id, before: previousRecord, after: data
+      });
       const i = db.accessories.findIndex(a => a.id === editingAccessoryId); if (i > -1) db.accessories[i] = data; else db.accessories.push(data);
     } else {
-      addAuditEntry('create', 'accessory', name, '');
+      addAuditEntry('create', 'accessory', name, '', {
+        collection: 'accessories', recordId: data.id, before: null, after: data
+      });
       db.accessories.push(data);
     }
     const attemptedDatabase = structuredClone(db);
@@ -4634,7 +4663,11 @@ async function saveMaintenanceEntry() {
       description: rteValue('mDescription')
     };
     firearm.maintenanceLog.push(entry);
-    addAuditEntry('create', 'maintenance', (firearm.make||'')+' '+(firearm.model||''), entry.type);
+    addAuditEntry('create', 'maintenance', (firearm.make||'')+' '+(firearm.model||''), entry.type, {
+      collection: 'firearms', recordId: firearm.id,
+      before: previousDatabase.firearms.find(item => item.id === firearm.id) || null,
+      after: firearm
+    });
     const attemptedDatabase = structuredClone(db);
     if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'maintenanceModal', 'Maintenance entry'); return false; }
     if (!await resolveRecoveredFormSession('maintenanceModal')) { holdCommittedRecoveredForm('maintenanceModal', 'saveMaintenanceBtn'); return true; }
@@ -5062,6 +5095,8 @@ const ModalAccessibility = (() => {
     formModal: () => closeModal(), detailView: () => closeDetail(), ammoModal: () => closeAmmoModal(),
     accessoryModal: () => closeAccessoryModal(), maintenanceModal: () => closeMaintenanceModal(),
     backupModal: () => closeBackupModal(), cameraModal: () => closeCameraModal(),
+    activityCenterModal: () => closeActivityCenter(), healthModal: () => closeCollectionHealth(),
+    quickCaptureModal: () => closeQuickCaptureModal(), reportPackageModal: () => closeReportPackageModal(),
     settingsModal: () => closeSettingsModal(), passwordModal: () => closePasswordModal(),
     syncCenterModal: () => closeSyncCenter(),
     wishlistModal: () => closeWishlistModal(), dealerModal: () => closeDealerModal(),
@@ -5468,8 +5503,19 @@ async function saveWishlistItem() {
       data.dateAdded = new Date().toISOString().slice(0,10);
     }
     const previousDatabase = structuredClone(db);
-    if (editingWishlistId) { const i = db.wishlist.findIndex(x => x.id === editingWishlistId); if (i > -1) db.wishlist[i] = data; else db.wishlist.push(data); addAuditEntry('edit','wishlist',(data.make||'')+' '+(data.model||''),''); }
-    else { db.wishlist.push(data); addAuditEntry('create','wishlist',make+' '+model,''); }
+    const previousRecord = editingWishlistId ? previousDatabase.wishlist.find(item => item.id === editingWishlistId) || null : null;
+    if (editingWishlistId) {
+      const i = db.wishlist.findIndex(x => x.id === editingWishlistId);
+      if (i > -1) db.wishlist[i] = data; else db.wishlist.push(data);
+      addAuditEntry('edit', 'wishlist', (data.make || '') + ' ' + (data.model || ''), '', {
+        collection: 'wishlist', recordId: data.id, before: previousRecord, after: data
+      });
+    } else {
+      db.wishlist.push(data);
+      addAuditEntry('create', 'wishlist', make + ' ' + model, '', {
+        collection: 'wishlist', recordId: data.id, before: null, after: data
+      });
+    }
     const attemptedDatabase = structuredClone(db);
     if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'wishlistModal', 'Wishlist item'); return false; }
     if (!await resolveRecoveredFormSession('wishlistModal')) { holdCommittedRecoveredForm('wishlistModal', 'saveWishlistBtn'); return true; }
@@ -5482,7 +5528,9 @@ async function saveWishlistItem() {
 async function deleteWishlistItem(id) {
   if (!await confirmDialog('Remove from wishlist?', { title: 'Remove from wishlist', okText: 'Remove', danger: true })) return;
   const w = db.wishlist.find(x => x.id === id);
-  addAuditEntry('delete','wishlist', w ? (w.make+' '+w.model) : 'Unknown','');
+  addAuditEntry('delete','wishlist', w ? (w.make+' '+w.model) : 'Unknown','', {
+    collection: 'wishlist', recordId: id, before: w || null, after: null
+  });
   db.wishlist = db.wishlist.filter(x => x.id !== id);
   saveData(); render();
 }
@@ -5509,8 +5557,12 @@ function setWishlistFilter(p) { _wishFilter = p; render(); }
 function cycleWishlistPriority(id) {
   const w = (db.wishlist || []).find(x => x.id === id);
   if (!w) return;
+  const before = structuredClone(w);
   const order = ['high', 'medium', 'low'];
   w.priority = order[(order.indexOf(_wishPrio(w)) + 1) % order.length];
+  addAuditEntry('edit', 'wishlist', ((w.make || '') + ' ' + (w.model || '')).trim() || 'Wishlist item', 'Changed priority', {
+    collection: 'wishlist', recordId: w.id, before, after: w
+  });
   saveData(); render();
 }
 
@@ -5623,8 +5675,19 @@ async function saveDealer() {
       data.favorite = false;
     }
     const previousDatabase = structuredClone(db);
-    if (editingDealerId) { const i = db.dealers.findIndex(x => x.id === editingDealerId); if (i > -1) db.dealers[i] = data; else db.dealers.push(data); addAuditEntry('edit','dealer',data.name,''); }
-    else { db.dealers.push(data); addAuditEntry('create','dealer',name,''); }
+    const previousRecord = editingDealerId ? previousDatabase.dealers.find(item => item.id === editingDealerId) || null : null;
+    if (editingDealerId) {
+      const i = db.dealers.findIndex(x => x.id === editingDealerId);
+      if (i > -1) db.dealers[i] = data; else db.dealers.push(data);
+      addAuditEntry('edit', 'dealer', data.name, '', {
+        collection: 'dealers', recordId: data.id, before: previousRecord, after: data
+      });
+    } else {
+      db.dealers.push(data);
+      addAuditEntry('create', 'dealer', name, '', {
+        collection: 'dealers', recordId: data.id, before: null, after: data
+      });
+    }
     const attemptedDatabase = structuredClone(db);
     if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'dealerModal', 'Dealer'); return false; }
     if (!await resolveRecoveredFormSession('dealerModal')) { holdCommittedRecoveredForm('dealerModal', 'saveDealerBtn'); return true; }
@@ -5637,7 +5700,9 @@ async function saveDealer() {
 async function deleteDealer(id) {
   if (!await confirmDialog('Delete this dealer?', { title: 'Delete dealer', okText: 'Delete', danger: true })) return;
   const d = db.dealers.find(x => x.id === id);
-  addAuditEntry('delete','dealer',d?d.name:'Unknown','');
+  addAuditEntry('delete','dealer',d?d.name:'Unknown','', {
+    collection: 'dealers', recordId: id, before: d || null, after: null
+  });
   db.dealers = db.dealers.filter(x => x.id !== id); saveData(); render();
 }
 
@@ -5645,7 +5710,11 @@ async function deleteDealer(id) {
 function toggleDealerFavorite(id) {
   const d = db.dealers.find(x => x.id === id);
   if (!d) return;
+  const before = structuredClone(d);
   d.favorite = !d.favorite;
+  addAuditEntry('edit', 'dealer', d.name || 'Dealer', d.favorite ? 'Marked preferred' : 'Removed preferred status', {
+    collection: 'dealers', recordId: d.id, before, after: d
+  });
   saveData(); render();
 }
 
@@ -6158,7 +6227,9 @@ function duplicateFirearm(id) {
   clone.roundCount = 0;
   clone.notes = (clone.notes || '') + (clone.notes ? '<br>' : '') + '<em>Duplicated from ' + esc((f.make||'')+' '+(f.model||'')) + '</em>';
   db.firearms.push(clone);
-  addAuditEntry('create','firearm',(clone.make||'')+' '+(clone.model||''),'Duplicated from '+f.serial);
+  addAuditEntry('create','firearm',(clone.make||'')+' '+(clone.model||''),'Duplicated from an existing record', {
+    collection: 'firearms', recordId: clone.id, before: null, after: clone
+  });
   saveData(); render();
   toast('Duplicated! Edit the new entry to update the serial number.');
 }
@@ -6565,7 +6636,9 @@ function deleteWithUndo(type, id) {
   } else return;
 
   undoData = { type, collection, item };
-  addAuditEntry('delete', type, name, '');
+  addAuditEntry('delete', type, name, '', {
+    collection, recordId: item.id, before: item, after: null
+  });
   saveData(); render();
 
   // Show undo toast
@@ -6588,7 +6661,9 @@ function deleteWithUndo(type, id) {
 function undoDelete() {
   if (!undoData) return;
   db[undoData.collection].push(undoData.item);
-  addAuditEntry('create', undoData.type, (undoData.item.make||undoData.item.name||undoData.item.brand||'Item'), 'Undo delete');
+  addAuditEntry('create', undoData.type, (undoData.item.make||undoData.item.name||undoData.item.brand||'Item'), 'Undo delete', {
+    collection: undoData.collection, recordId: undoData.item.id, before: null, after: undoData.item
+  });
   saveData(); render();
   document.getElementById('undoToast').style.display = 'none';
   clearTimeout(undoTimer);
@@ -6626,15 +6701,21 @@ function clearBulkSelection() {
 async function bulkAddTag() {
   const tag = document.getElementById('bulkTagInput').value.trim();
   if (!tag) { toast('Enter a tag name.'); return; }
-  let count = 0;
+  const changed = [];
   bulkSelected.forEach(id => {
     const f = db.firearms.find(x => x.id === id);
     if (f) {
       if (!f.tags) f.tags = [];
-      if (!f.tags.includes(tag)) { f.tags.push(tag); count++; }
+      if (!f.tags.includes(tag)) {
+        const before = structuredClone(f);
+        f.tags.push(tag);
+        changed.push({ before, after: f });
+      }
     }
   });
-  addAuditEntry('edit', 'bulk', count + ' firearms', 'Added tag: ' + tag);
+  changed.forEach(({ before, after }) => addAuditEntry('edit', 'firearm', ((after.make || '') + ' ' + (after.model || '')).trim() || 'Firearm', 'Bulk tag added: ' + tag, {
+    collection: 'firearms', recordId: after.id, before, after
+  }));
   document.getElementById('bulkTagInput').value = '';
   await saveData();
   clearBulkSelection();
@@ -6643,15 +6724,21 @@ async function bulkAddTag() {
 async function bulkRemoveTag() {
   const tag = document.getElementById('bulkTagInput').value.trim();
   if (!tag) { toast('Enter a tag name to remove.'); return; }
-  let count = 0;
+  const changed = [];
   bulkSelected.forEach(id => {
     const f = db.firearms.find(x => x.id === id);
     if (f && f.tags) {
       const idx = f.tags.indexOf(tag);
-      if (idx > -1) { f.tags.splice(idx, 1); count++; }
+      if (idx > -1) {
+        const before = structuredClone(f);
+        f.tags.splice(idx, 1);
+        changed.push({ before, after: f });
+      }
     }
   });
-  addAuditEntry('edit', 'bulk', count + ' firearms', 'Removed tag: ' + tag);
+  changed.forEach(({ before, after }) => addAuditEntry('edit', 'firearm', ((after.make || '') + ' ' + (after.model || '')).trim() || 'Firearm', 'Bulk tag removed: ' + tag, {
+    collection: 'firearms', recordId: after.id, before, after
+  }));
   document.getElementById('bulkTagInput').value = '';
   await saveData();
   clearBulkSelection();

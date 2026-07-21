@@ -8,7 +8,8 @@ const CORE_SHELL = [
   './', './index.html', './share.html',
   './css/fonts.css', './css/styles.css', './css/vault-ui.css',
   './js/config.js', './js/security.js', './js/data-safety.js', './js/asset-loader.js', './js/data-quality.js',
-  './js/supabase-client.js', './js/app.js', './js/cloud-sync.js', './js/auth.js', './js/action-runtime.js', './js/ui-shell.js',
+  './js/supabase-client.js', './js/app.js', './js/cloud-sync.js', './js/backup-vault.js', './js/collection-health.js',
+  './js/activity-center.js', './js/quick-capture.js', './js/report-packages.js', './js/auth.js', './js/action-runtime.js', './js/ui-shell.js',
   './js/pwa-register.js', './js/share.js',
   './vendor/supabase.js', './vendor/fonts/InterVariable.woff2',
   './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png'

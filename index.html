@@ -100,6 +100,38 @@
       <p class="settings-help">Created after successful cloud saves. Restoring one replaces the current structured collection and immediately creates a pending sync.</p>
       <div class="backup-list" id="backupList"></div>
       <hr class="backup-divider">
+      <section class="independent-backup-panel" aria-labelledby="independentBackupTitle">
+        <div class="independent-backup-heading">
+          <div><p class="feature-kicker">Outside Supabase</p><h3 id="independentBackupTitle" class="backup-section-title">Automatic encrypted weekly backup</h3></div>
+          <strong id="independentBackupStatus" class="independent-backup-status" data-state="disabled">Checking this device&hellip;</strong>
+        </div>
+        <p class="settings-help">Choose a folder on this computer or an independently synced drive. When a backup is due, Firearms Vault writes it while the vault is open, reopens it, decrypts it, validates the collection and attachments, and keeps the newest versions.</p>
+        <dl class="independent-backup-grid">
+          <div><dt>Backup folder</dt><dd id="independentBackupDirectory">No folder connected</dd></div>
+          <div><dt>Last successful backup</dt><dd id="independentBackupLastRun">Not yet</dd></div>
+          <div><dt>Last verified backup</dt><dd id="independentBackupLastVerified">Not yet</dd></div>
+          <div><dt>Next due check</dt><dd id="independentBackupNextRun">After setup</dd></div>
+          <div><dt>Versions retained</dt><dd id="independentBackupRetentionStatus">Not configured</dd></div>
+        </dl>
+        <p id="independentBackupLimitations" class="backup-scheduling-note">Weekly checks run when this vault is open or becomes active; a web browser cannot guarantee a job while every vault window is closed.</p>
+        <p id="independentBackupError" class="independent-backup-error" role="alert"></p>
+        <details class="backup-setup-disclosure">
+          <summary>Set up or change automatic backup</summary>
+          <div class="form-grid backup-password-grid">
+            <div class="form-group"><label for="independentBackupPassword">Recovery password</label><input type="password" id="independentBackupPassword" minlength="12" autocomplete="new-password" placeholder="At least 12 characters"></div>
+            <div class="form-group"><label for="independentBackupPasswordConfirm">Confirm password</label><input type="password" id="independentBackupPasswordConfirm" minlength="12" autocomplete="new-password"></div>
+            <div class="form-group"><label for="independentBackupRetention">Weekly versions to retain</label><input type="number" id="independentBackupRetention" min="2" max="52" value="12"></div>
+            <div class="form-group backup-actions"><button type="button" class="btn btn-primary" onclick="setupIndependentBackup()">Choose folder and enable</button></div>
+          </div>
+          <p class="settings-help">The password is never saved. Keep it in a password manager: each backup contains a password-wrapped recovery key so it can be opened on another device.</p>
+        </details>
+        <div class="independent-backup-actions">
+          <button type="button" class="btn btn-primary" id="independentBackupRunBtn" onclick="runIndependentBackupNow()" hidden>Back up and verify now</button>
+          <button type="button" class="btn btn-outline" id="independentBackupReconnectBtn" onclick="reconnectIndependentBackup()" hidden>Reconnect folder</button>
+          <button type="button" class="btn btn-outline" id="independentBackupDisableBtn" onclick="disableIndependentBackup()" hidden>Disable on this device</button>
+        </div>
+      </section>
+      <hr class="backup-divider">
       <h3 class="backup-section-title">Download a full recovery backup</h3>
       <p class="settings-help">Includes every collection and locally available media, plus a SHA-256 integrity check. A password of at least 12 characters encrypts it with AES-256-GCM.</p>
       <div class="form-grid backup-password-grid">
@@ -120,6 +152,170 @@
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeBackupModal()">Close</button>
     </div>
+  </div>
+</div>
+
+<!-- Searchable Activity History Modal -->
+<div class="modal-overlay" id="activityCenterModal">
+  <div class="modal feature-modal" role="dialog" aria-modal="true" aria-labelledby="activityCenterTitle">
+    <div class="modal-header">
+      <div>
+        <p class="feature-kicker">Account history</p>
+        <h2 id="activityCenterTitle">Activity history</h2>
+      </div>
+      <button class="modal-close" type="button" onclick="closeActivityCenter()" aria-label="Close activity history">&times;</button>
+    </div>
+    <div class="modal-body feature-modal-body">
+      <div class="activity-toolbar">
+        <label class="activity-search"><span>Search</span><input type="search" id="activitySearch" placeholder="Item, action, field, or detail"></label>
+        <label><span>Action</span><select id="activityActionFilter"><option value="">All actions</option><option value="create">Created</option><option value="edit">Edited</option><option value="delete">Deleted</option><option value="restore">Restored</option><option value="import">Imported</option></select></label>
+        <label><span>Record</span><select id="activityTypeFilter"><option value="">All records</option><option value="firearm">Firearms</option><option value="ammo">Ammunition</option><option value="accessory">Accessories</option><option value="wishlist">Wishlist</option><option value="dealer">Dealers</option><option value="maintenance">Maintenance</option><option value="system">System</option></select></label>
+        <label><span>Date</span><input type="date" id="activityDateFilter"></label>
+        <button type="button" class="btn btn-outline btn-small" id="activityClearFilters">Clear filters</button>
+      </div>
+      <div class="activity-results-heading"><strong id="activityResultCount">0 entries</strong><span>Expand an entry to compare fields or restore just that record.</span></div>
+      <div id="activityList" class="activity-center-list" aria-live="polite"></div>
+    </div>
+    <div class="modal-footer activity-pagination">
+      <button type="button" class="btn btn-outline" id="activityPrev">Previous</button>
+      <span id="activityPageLabel">Page 1 of 1</span>
+      <button type="button" class="btn btn-outline" id="activityNext">Next</button>
+      <button type="button" class="btn btn-primary" onclick="closeActivityCenter()">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Collection Health Modal -->
+<div class="modal-overlay" id="healthModal">
+  <div class="modal feature-modal" role="dialog" aria-modal="true" aria-labelledby="healthTitle">
+    <div class="modal-header">
+      <div>
+        <p class="feature-kicker">Guided cleanup</p>
+        <h2 id="healthTitle">Collection Health</h2>
+      </div>
+      <button class="modal-close" type="button" data-health-close aria-label="Close Collection Health">&times;</button>
+    </div>
+    <div class="modal-body feature-modal-body">
+      <section class="health-hero" aria-labelledby="healthSummary">
+        <div id="healthScore" class="health-score" data-status="empty" aria-label="Collection health score">&mdash;</div>
+        <div><h3 id="healthSummary">Checking your collection&hellip;</h3><p id="healthUpdatedAt">Not checked yet</p><p>Suggested cleanup is reviewed before saving. Records are never merged or deleted automatically.</p></div>
+      </section>
+      <div id="healthMetrics" class="health-metrics" aria-label="Collection completeness"></div>
+      <div class="health-issues-heading">
+        <div><h3>Issues to review</h3><p>Misspellings, inconsistent values, missing details, attachment problems, and possible duplicates.</p></div>
+        <label for="healthFilter"><span>Show</span><select id="healthFilter"><option value="all">All issues</option><option value="errors">Errors</option><option value="warnings">Warnings</option><option value="safe-fixes">Safe automatic fixes</option><option value="manufacturers">Manufacturers</option><option value="calibers">Calibers / gauges</option><option value="barrels">Barrel formatting</option><option value="tags">Tags</option><option value="attachments">Photos &amp; documents</option><option value="duplicates">Possible duplicates</option></select></label>
+      </div>
+      <div id="healthIssues" class="health-issues" aria-live="polite"></div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" data-health-close>Close</button>
+      <button type="button" class="btn btn-primary" id="healthApplyBtn" disabled>No safe fixes needed</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mobile Quick Capture Modal -->
+<div class="modal-overlay" id="quickCaptureModal">
+  <div class="modal feature-modal quick-capture-modal" role="dialog" aria-modal="true" aria-labelledby="quickCaptureTitle">
+    <div class="modal-header">
+      <div><p class="feature-kicker">Review before save</p><h2 id="quickCaptureTitle">Mobile Quick Capture</h2></div>
+      <button type="button" class="modal-close" onclick="closeQuickCaptureModal()" aria-label="Close Quick Capture">&times;</button>
+    </div>
+    <div class="modal-body feature-modal-body quick-capture-body">
+      <section class="quick-capture-camera" aria-label="Capture a photo or document">
+        <div class="quick-capture-stage">
+          <video id="quickCaptureVideo" playsinline autoplay muted></video>
+          <img id="quickCapturePreview" alt="Most recent Quick Capture image" hidden>
+          <canvas id="quickCaptureCanvas" hidden></canvas>
+          <p id="quickCaptureFileName" class="quick-capture-filename" hidden></p>
+        </div>
+        <div class="quick-capture-controls">
+          <label for="quickCaptureCategory"><span>What are you capturing?</span><select id="quickCaptureCategory" onchange="setQuickCaptureCategory(this.value)"><option value="serial">Serial number / label</option><option value="firearm">Firearm photo</option><option value="receipt">Receipt</option><option value="tax-stamp">Tax stamp</option></select></label>
+          <div class="quick-capture-buttons">
+            <button type="button" class="btn btn-primary" id="quickCaptureCaptureBtn" onclick="captureQuickCaptureSnapshot()">Take photo</button>
+            <label class="btn btn-outline quick-capture-file-btn" for="quickCaptureFile">Choose photo or PDF</label>
+            <input id="quickCaptureFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif,application/pdf" multiple onchange="handleQuickCaptureFile(event)">
+          </div>
+          <div class="quick-capture-ready"><strong id="quickCaptureArtifactCount">No captures yet</strong><label><input type="checkbox" id="quickCaptureAttachPhoto" checked> Add firearm and serial photos to the record</label></div>
+        </div>
+      </section>
+      <p id="quickCaptureStatus" class="quick-capture-status" role="status" aria-live="polite" hidden></p>
+      <progress id="quickCaptureProgress" max="1" value="0" hidden>Scanning</progress>
+      <section id="quickCaptureResult" class="quick-capture-result" aria-labelledby="quickCaptureReviewTitle" hidden>
+        <div class="quick-capture-result-heading"><div><p class="feature-kicker">Local text extraction</p><h3 id="quickCaptureReviewTitle">Review suggested details</h3></div><button type="button" class="btn btn-outline btn-small" id="quickCaptureAnalyzeBtn" onclick="analyzeQuickCaptureImage()">Scan again</button></div>
+        <p id="quickCaptureDuplicate" class="quick-capture-duplicate" role="alert" hidden></p>
+        <div class="form-grid">
+          <div class="form-group"><label for="quickCaptureMake">Manufacturer</label><input id="quickCaptureMake" type="text" autocomplete="off"></div>
+          <div class="form-group"><label for="quickCaptureModel">Model</label><input id="quickCaptureModel" type="text" autocomplete="off"></div>
+          <div class="form-group"><label for="quickCaptureSerial">Serial number</label><input id="quickCaptureSerial" type="text" autocomplete="off"></div>
+          <div class="form-group"><label for="quickCaptureCaliber">Caliber / gauge</label><input id="quickCaptureCaliber" type="text" list="caliberList" autocomplete="off"></div>
+          <div class="form-group"><label for="quickCaptureType">Type</label><select id="quickCaptureType"><option value="">Not suggested</option><option>Rifle</option><option>Pistol</option><option>Shotgun</option><option>Revolver</option><option>Silencer</option><option>Other</option></select></div>
+          <details class="form-group full quick-capture-raw"><summary>Show extracted text</summary><textarea id="quickCaptureRawText" rows="4" aria-label="Extracted text"></textarea></details>
+        </div>
+        <button type="button" class="btn btn-outline btn-small" onclick="openQuickCaptureExistingMatch()">Open matching record</button>
+      </section>
+      <p class="quick-capture-privacy">OCR and suggestions run locally in this browser. Nothing is saved until the existing Add Firearm form opens and you approve its Save button.</p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" onclick="closeQuickCaptureModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" id="quickCaptureApproveBtn" onclick="approveQuickCaptureToReview()">Review in Add Firearm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Insurance / Theft Report Package Modal -->
+<div class="modal-overlay" id="reportPackageModal">
+  <div class="modal feature-modal report-package-modal" role="dialog" aria-modal="true" aria-labelledby="reportPackageTitleHeading">
+    <div class="modal-header">
+      <div><p class="feature-kicker">Portable evidence</p><h2 id="reportPackageTitleHeading">Insurance / theft package</h2></div>
+      <button type="button" class="modal-close" onclick="closeReportPackageModal()" aria-label="Close report package">&times;</button>
+    </div>
+    <div class="modal-body feature-modal-body">
+      <div class="report-package-intro"><div><strong id="reportPackageSelectionCount">No items selected</strong><p>Full packages are encrypted locally. Redacted share copies omit private documents and can hide serial numbers.</p></div><span class="report-security-badge">AES-256-GCM</span></div>
+      <p id="reportPackageStatus" class="report-package-status" role="status" aria-live="polite" hidden></p>
+      <section class="report-package-section" aria-labelledby="reportPackageContentsTitle">
+        <h3 id="reportPackageContentsTitle">Build package</h3>
+        <div class="form-grid">
+          <div class="form-group"><label for="reportPackagePurpose">Purpose</label><select id="reportPackagePurpose" onchange="updateReportPackagePreset()"><option value="insurance">Insurance documentation</option><option value="theft">Theft / loss report</option></select></div>
+          <div class="form-group"><label for="reportPackageMode">Package profile</label><select id="reportPackageMode" onchange="updateReportPackageModePreset()"><option value="full" selected>Full encrypted evidence</option><option value="redacted">Redacted share copy</option></select></div>
+          <div class="form-group"><label for="reportPackageScope">Items</label><select id="reportPackageScope"><option value="selected">Selected firearms</option><option value="active">All active firearms</option><option value="all">All records</option></select></div>
+          <div class="form-group"><label for="reportPackageSerialMode">Serial numbers</label><select id="reportPackageSerialMode"><option value="full">Show full serials</option><option value="last4">Show last four</option><option value="omit">Omit serials</option></select></div>
+          <div class="form-group full"><label for="reportPackageTitle">Report title</label><input id="reportPackageTitle" type="text" placeholder="Insurance Inventory Report"></div>
+        </div>
+        <fieldset class="report-package-options"><legend>Include</legend>
+          <label><input type="checkbox" id="reportPackageIncludeValues" checked> Documented values</label>
+          <label><input type="checkbox" id="reportPackageIncludePhotos" checked> Firearm photos</label>
+          <label><input type="checkbox" id="reportPackageIncludeReceipts" checked> Receipts</label>
+          <label><input type="checkbox" id="reportPackageIncludeDocuments" checked> Ownership documents</label>
+          <label><input type="checkbox" id="reportPackageIncludeTaxStamps" checked> Tax stamps</label>
+          <label><input type="checkbox" id="reportPackageIncludeAccessories" checked> Assigned accessories</label>
+          <label><input type="checkbox" id="reportPackageIncludeExactDates" checked> Exact acquisition dates</label>
+          <label><input type="checkbox" id="reportPackageIncludeDisposed"> Sold / transferred items</label>
+          <label><input type="checkbox" id="reportPackageIncludeNotes"> Private notes</label>
+          <label><input type="checkbox" id="reportPackageIncludeCustomFields"> Custom fields</label>
+          <label><input type="checkbox" id="reportPackageIncludeDisposition"> Disposition details</label>
+        </fieldset>
+        <div class="report-encryption-card">
+          <label class="report-encryption-toggle"><input type="checkbox" id="reportPackageEncrypt" checked><span><strong>Encrypt the package</strong><small>Required for full reports, complete serials, receipts, ownership documents, and tax stamps.</small></span></label>
+          <div class="form-grid">
+            <div class="form-group"><label for="reportPackagePassword">Package password</label><input type="password" id="reportPackagePassword" minlength="12" maxlength="72" autocomplete="new-password" placeholder="At least 12 characters"></div>
+            <div class="form-group"><label for="reportPackagePasswordConfirm">Confirm password</label><input type="password" id="reportPackagePasswordConfirm" minlength="12" maxlength="72" autocomplete="new-password"></div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary report-generate-btn" id="reportPackageGenerateBtn" onclick="generateReportPackage()">Generate package</button>
+      </section>
+      <details class="report-package-section report-decrypt-section">
+        <summary>Open an encrypted package</summary>
+        <p class="settings-help">Decryption and integrity verification happen locally. The verified ZIP is downloaded for you to open or share.</p>
+        <div class="form-grid">
+          <div class="form-group"><label for="reportPackageDecryptFile">Secure package</label><input type="file" id="reportPackageDecryptFile" accept=".fvpackage,application/vnd.firearms-vault.package+json,application/json"></div>
+          <div class="form-group"><label for="reportPackageDecryptPassword">Package password</label><input type="password" id="reportPackageDecryptPassword" autocomplete="current-password"></div>
+        </div>
+        <p id="reportPackageDecryptSummary" class="settings-help" hidden></p>
+        <button type="button" class="btn btn-outline" id="reportPackageDecryptBtn" onclick="decryptReportPackage()">Verify and decrypt</button>
+      </details>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline" onclick="closeReportPackageModal()">Close</button></div>
   </div>
 </div>
 
@@ -267,7 +463,7 @@
       <h1>Firearms Vault</h1>
       <p>Private collection manager</p>
     </div>
-    <span class="version-badge">v2.1 &middot; Cloud</span>
+    <span class="version-badge">v2.2 &middot; Cloud</span>
   </div>
   <div class="header-right">
     <div class="header-stats">
@@ -369,6 +565,9 @@
   </nav>
   <div class="vault-sidebar-tools">
     <p class="vault-sidebar-label">Manage</p>
+    <button type="button" class="vault-sidebar-action" onclick="openQuickCaptureModal()">Quick capture</button>
+    <button type="button" class="vault-sidebar-action" onclick="openCollectionHealth()">Collection health</button>
+    <button type="button" class="vault-sidebar-action" onclick="openActivityCenter()">Activity history</button>
     <button type="button" class="vault-sidebar-action" onclick="openShareModal()">Share inventory</button>
     <button type="button" class="vault-sidebar-action" onclick="openBackupModal()">Data &amp; recovery</button>
     <button type="button" class="vault-sidebar-action" onclick="openSettingsModal()">Settings</button>
@@ -384,6 +583,7 @@
   </div>
   <div class="page-heading-actions">
     <span class="page-record-count" id="pageRecordCount" aria-live="polite">0 items</span>
+    <button type="button" class="btn btn-outline quick-capture-launch" onclick="openQuickCaptureModal()">Quick capture</button>
     <button type="button" class="btn btn-primary" id="pageAddBtn" onclick="ctxAdd()">Add firearm</button>
   </div>
 </section>
@@ -435,6 +635,11 @@
   <div class="menu" id="toolsMenu">
     <button class="btn btn-secondary" data-menu-toggle aria-haspopup="true" aria-label="Tools">Tools &#9662;</button>
     <div class="menu-panel">
+      <button class="menu-item" onclick="openQuickCaptureModal()">Quick Capture</button>
+      <button class="menu-item" onclick="openCollectionHealth()">Collection Health</button>
+      <button class="menu-item" onclick="openActivityCenter()">Activity History</button>
+      <button class="menu-item" onclick="openReportPackageModal()">Insurance / Theft Package</button>
+      <div class="menu-sep"></div>
       <button class="menu-item" onclick="openReportBuilder()">&#128202; Custom Report</button>
       <button class="menu-item" onclick="exportATFBoundBook()">&#128214; ATF Bound Book</button>
       <button class="menu-item" onclick="openCameraModal()">&#128247; Scan Serial</button>
@@ -509,6 +714,7 @@
   <input type="text" id="bulkTagInput" placeholder="Enter tag name...">
   <button onclick="bulkAddTag()">Add Tag</button>
   <button onclick="bulkRemoveTag()">Remove Tag</button>
+  <button onclick="openReportPackageModal()">Insurance / theft package</button>
   <button onclick="clearBulkSelection()" style="margin-left:auto;">Cancel</button>
 </div>
 
@@ -1126,6 +1332,7 @@
           <h3>Data quality</h3>
           <p class="settings-help">Find duplicate serials, invalid dates, inconsistent capitalization, extra whitespace, and duplicate tags. Safe cleanup never deletes or merges records.</p>
           <div class="mfa-actions">
+            <button type="button" class="btn btn-primary" onclick="openCollectionHealth()">Open Collection Health</button>
             <button type="button" class="btn btn-outline" onclick="runDataQualityCheck()">Check collection</button>
             <button type="button" class="btn btn-primary" id="applyDataQualityBtn" onclick="applyDataQualityCleanup()" style="display:none;">Apply safe cleanup</button>
           </div>
@@ -1150,7 +1357,7 @@
           <h3 style="color: var(--accent); font-size: 0.9rem; margin-bottom: 12px;">Activity Log (Audit Trail)</h3>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <span style="font-size:0.78rem;color:var(--text3);" id="auditCount">0 entries</span>
-            <button class="btn btn-small btn-outline" onclick="clearAuditTrail()">Clear Log</button>
+            <div class="mfa-actions"><button class="btn btn-small btn-primary" onclick="openActivityCenter()">Search full history</button><button class="btn btn-small btn-outline" onclick="clearAuditTrail()">Clear Log</button></div>
           </div>
           <div class="audit-list" id="auditList" style="border:1px solid var(--border);border-radius:6px;background:var(--bg2);"></div>
         </div>
@@ -1199,6 +1406,11 @@
       <button class="menu-item" data-bottomtab="wishlist">&#11088; Wishlist</button>
       <button class="menu-item" data-bottomtab="dealers">&#127970; FFL Dealers</button>
       <div class="menu-sep"></div>
+      <button class="menu-item" onclick="openQuickCaptureModal()">Quick capture</button>
+      <button class="menu-item" onclick="openCollectionHealth()">Collection health</button>
+      <button class="menu-item" onclick="openActivityCenter()">Activity history</button>
+      <button class="menu-item" onclick="openReportPackageModal()">Insurance / theft package</button>
+      <div class="menu-sep"></div>
       <button class="menu-item" onclick="openShareModal()">Share inventory</button>
       <button class="menu-item" onclick="openBackupModal()">Data &amp; recovery</button>
       <button class="menu-item" onclick="openSettingsModal()">Settings</button>
@@ -1235,6 +1447,11 @@
 <script src="js/data-quality.js"></script>
 <script src="js/app.js"></script>
 <script src="js/cloud-sync.js"></script>
+<script src="js/backup-vault.js"></script>
+<script src="js/collection-health.js"></script>
+<script src="js/activity-center.js"></script>
+<script src="js/quick-capture.js"></script>
+<script src="js/report-packages.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/action-runtime.js"></script>
 <script src="js/ui-shell.js"></script>

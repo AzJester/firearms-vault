@@ -6,6 +6,9 @@
   const DB_VERSION = 1;
   const STORES = ['state', 'outbox', 'backups', 'metadata'];
   const BACKUP_LIMIT = 30;
+  const ARTIFACT_FORMAT_VERSION = 2;
+  const ARTIFACT_KEY_PREFIX = 'artifact-key:';
+  const ARTIFACT_KDF_ITERATIONS = 310000;
 
   let openPromise = null;
 
@@ -86,6 +89,49 @@
       if (!keys.length) return;
       await transact(storeName, 'readwrite', (store) => keys.forEach((key) => store.delete(key)));
     }));
+  }
+
+  function requireMetadataName(name) {
+    const value = String(name || '').trim();
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) throw new Error('A valid metadata name is required.');
+    return value;
+  }
+
+  async function putMetadata(uid, name, value) {
+    const user = requireUID(uid);
+    const metadataName = requireMetadataName(name);
+    const record = {
+      key: scopedKey(user, 'metadata:' + metadataName),
+      uid: user,
+      name: metadataName,
+      value,
+      updatedAt: new Date().toISOString()
+    };
+    await transact('metadata', 'readwrite', (store) => store.put(record));
+    return record;
+  }
+
+  async function getMetadata(uid, name) {
+    const user = requireUID(uid);
+    const metadataName = requireMetadataName(name);
+    const database = await openDB();
+    const record = await requestResult(database.transaction('metadata', 'readonly')
+      .objectStore('metadata').get(scopedKey(user, 'metadata:' + metadataName)));
+    return record ? record.value : null;
+  }
+
+  async function deleteMetadata(uid, name) {
+    const metadataName = requireMetadataName(name);
+    return transact('metadata', 'readwrite', (store) =>
+      store.delete(scopedKey(uid, 'metadata:' + metadataName)));
+  }
+
+  async function listMetadata(uid, prefix) {
+    const user = requireUID(uid);
+    const namePrefix = prefix == null ? '' : String(prefix);
+    const database = await openDB();
+    const records = await requestResult(database.transaction('metadata', 'readonly').objectStore('metadata').getAll());
+    return records.filter((record) => record.uid === user && (!namePrefix || String(record.name || '').startsWith(namePrefix)));
   }
 
   async function enqueue(uid, data, baseRevision) {
@@ -181,15 +227,238 @@
     return bytes;
   }
 
-  async function deriveKey(password, salt, usages) {
+  function validIterations(value, fallback) {
+    const iterations = Number(value == null ? fallback : value);
+    if (!Number.isInteger(iterations) || iterations < 100000 || iterations > 1000000) {
+      throw new Error('Encrypted backup key parameters are invalid.');
+    }
+    return iterations;
+  }
+
+  async function deriveKey(password, salt, usages, iterations) {
     const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
     return crypto.subtle.deriveKey(
-      { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 310000 },
+      { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: validIterations(iterations, ARTIFACT_KDF_ITERATIONS) },
       material,
       { name: 'AES-GCM', length: 256 },
       false,
       usages
     );
+  }
+
+  function requireArtifactNamespace(namespace) {
+    const value = String(namespace || '').trim();
+    if (!/^[A-Za-z0-9_.:-]{1,96}$/.test(value)) throw new Error('A valid encrypted-artifact namespace is required.');
+    return value;
+  }
+
+  function artifactKeyMetadataName(namespace) {
+    return ARTIFACT_KEY_PREFIX + requireArtifactNamespace(namespace);
+  }
+
+  function jsonClone(value) {
+    if (value == null) return {};
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function canonicalJSON(value) {
+    if (Array.isArray(value)) return '[' + value.map(canonicalJSON).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + canonicalJSON(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
+  function decodeSizedBase64(value, expectedLength, label, minimumLength) {
+    let bytes;
+    try { bytes = base64ToBytes(String(value || '')); }
+    catch (_) { throw new Error((label || 'Encrypted backup value') + ' is invalid.'); }
+    if (expectedLength && bytes.length !== expectedLength) throw new Error((label || 'Encrypted backup value') + ' is invalid.');
+    if (minimumLength && bytes.length < minimumLength) throw new Error((label || 'Encrypted backup value') + ' is invalid.');
+    return bytes;
+  }
+
+  function keyWrapHeader(wrapped) {
+    return {
+      format: 'firearms-vault-key-wrap',
+      formatVersion: 1,
+      algorithm: 'AES-256-GCM',
+      kdf: 'PBKDF2-SHA256',
+      iterations: validIterations(wrapped && wrapped.iterations, ARTIFACT_KDF_ITERATIONS),
+      keyId: String(wrapped && wrapped.keyId || ''),
+      namespace: requireArtifactNamespace(wrapped && wrapped.namespace)
+    };
+  }
+
+  function artifactHeader(envelope) {
+    return {
+      format: String(envelope && envelope.format || 'firearms-vault-encrypted-artifact'),
+      formatVersion: Number(envelope && envelope.formatVersion),
+      encrypted: true,
+      artifactType: String(envelope && envelope.artifactType || 'encrypted-artifact'),
+      namespace: requireArtifactNamespace(envelope && envelope.namespace),
+      keyId: String(envelope && envelope.keyId || ''),
+      createdAt: String(envelope && envelope.createdAt || ''),
+      schemaVersion: Number(envelope && envelope.schemaVersion || 0),
+      algorithm: 'AES-256-GCM',
+      plaintextType: String(envelope && envelope.plaintextType || 'text'),
+      checksum: String(envelope && envelope.checksum || ''),
+      accountTag: String(envelope && envelope.accountTag || ''),
+      metadata: jsonClone(envelope && envelope.metadata)
+    };
+  }
+
+  async function provisionArtifactKey(uid, namespace, password) {
+    const user = requireUID(uid);
+    const scope = requireArtifactNamespace(namespace);
+    const passphrase = String(password || '');
+    if (passphrase.length < 12) throw new Error('Use a recovery password with at least 12 characters.');
+
+    const rawKey = crypto.getRandomValues(new Uint8Array(32));
+    const keyId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const wrapSalt = crypto.getRandomValues(new Uint8Array(16));
+    const wrapIv = crypto.getRandomValues(new Uint8Array(12));
+    const wrappedHeader = {
+      format: 'firearms-vault-key-wrap', formatVersion: 1,
+      algorithm: 'AES-256-GCM', kdf: 'PBKDF2-SHA256', iterations: ARTIFACT_KDF_ITERATIONS,
+      keyId, namespace: scope
+    };
+    try {
+      const cryptoKey = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+      const wrappingKey = await deriveKey(passphrase, wrapSalt, ['encrypt'], ARTIFACT_KDF_ITERATIONS);
+      const wrappedBytes = await crypto.subtle.encrypt({
+        name: 'AES-GCM', iv: wrapIv,
+        additionalData: new TextEncoder().encode(canonicalJSON(wrappedHeader))
+      }, wrappingKey, rawKey);
+      const createdAt = new Date().toISOString();
+      const wrappedKey = Object.assign({}, wrappedHeader, {
+        salt: bytesToBase64(wrapSalt), iv: bytesToBase64(wrapIv),
+        ciphertext: bytesToBase64(new Uint8Array(wrappedBytes))
+      });
+      const record = { version: 1, uid: user, namespace: scope, keyId, createdAt, cryptoKey, wrappedKey };
+      await putMetadata(user, artifactKeyMetadataName(scope), record);
+      return record;
+    } finally {
+      rawKey.fill(0);
+    }
+  }
+
+  async function getArtifactKey(uid, namespace) {
+    const record = await getMetadata(uid, artifactKeyMetadataName(namespace));
+    if (!record || !record.cryptoKey || !record.wrappedKey || !record.keyId) return null;
+    return record;
+  }
+
+  async function deleteArtifactKey(uid, namespace) {
+    return deleteMetadata(uid, artifactKeyMetadataName(namespace));
+  }
+
+  async function unwrapArtifactKey(wrappedKey, password) {
+    const passphrase = String(password || '');
+    if (!passphrase) throw new Error('This encrypted backup requires its recovery password.');
+    if (!wrappedKey || wrappedKey.format !== 'firearms-vault-key-wrap' || Number(wrappedKey.formatVersion) !== 1 ||
+        wrappedKey.algorithm !== 'AES-256-GCM' || wrappedKey.kdf !== 'PBKDF2-SHA256') {
+      throw new Error('Encrypted backup key metadata is invalid.');
+    }
+    const header = keyWrapHeader(wrappedKey);
+    if (!header.keyId) throw new Error('Encrypted backup key metadata is invalid.');
+    const salt = decodeSizedBase64(wrappedKey && wrappedKey.salt, 16, 'Encrypted backup key salt');
+    const iv = decodeSizedBase64(wrappedKey && wrappedKey.iv, 12, 'Encrypted backup key IV');
+    const ciphertext = decodeSizedBase64(wrappedKey && wrappedKey.ciphertext, null, 'Encrypted backup wrapped key', 16);
+    const wrappingKey = await deriveKey(passphrase, salt, ['decrypt'], header.iterations);
+    let raw;
+    try {
+      raw = new Uint8Array(await crypto.subtle.decrypt({
+        name: 'AES-GCM', iv,
+        additionalData: new TextEncoder().encode(canonicalJSON(header))
+      }, wrappingKey, ciphertext));
+      if (raw.length !== 32) throw new Error('Encrypted backup key length is invalid.');
+      return await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+    } catch (error) {
+      if (error && /length is invalid/i.test(error.message || '')) throw error;
+      throw new Error('The recovery password is incorrect or the encrypted key is damaged.');
+    } finally {
+      if (raw) raw.fill(0);
+    }
+  }
+
+  async function encryptArtifact(uid, namespace, value, options) {
+    const user = requireUID(uid);
+    const scope = requireArtifactNamespace(namespace);
+    const opts = options || {};
+    const keyRecord = await getArtifactKey(user, scope);
+    if (!keyRecord) throw new Error('The automatic backup encryption key is unavailable. Set up encrypted backups again.');
+    const plaintextType = typeof value === 'string' ? 'text' : 'json';
+    const plaintext = plaintextType === 'text' ? value : JSON.stringify(value);
+    const createdAt = opts.createdAt ? new Date(opts.createdAt).toISOString() : new Date().toISOString();
+    const checksum = await digestText(plaintext);
+    const header = {
+      format: String(opts.format || 'firearms-vault-encrypted-artifact'),
+      formatVersion: ARTIFACT_FORMAT_VERSION,
+      encrypted: true,
+      artifactType: String(opts.artifactType || 'encrypted-artifact'),
+      namespace: scope,
+      keyId: keyRecord.keyId,
+      createdAt,
+      schemaVersion: Number(opts.schemaVersion || 0),
+      algorithm: 'AES-256-GCM',
+      plaintextType,
+      checksum,
+      accountTag: String(opts.accountTag || ''),
+      metadata: jsonClone(opts.metadata)
+    };
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({
+      name: 'AES-GCM', iv,
+      additionalData: new TextEncoder().encode(canonicalJSON(header))
+    }, keyRecord.cryptoKey, new TextEncoder().encode(plaintext));
+    return Object.assign({}, header, {
+      iv: bytesToBase64(iv),
+      keyWrap: jsonClone(keyRecord.wrappedKey),
+      ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+    });
+  }
+
+  async function decryptArtifact(envelope, options) {
+    const opts = typeof options === 'string' ? { password: options } : (options || {});
+    if (!envelope || Number(envelope.formatVersion) !== ARTIFACT_FORMAT_VERSION || envelope.encrypted !== true) {
+      throw new Error('This is not a supported encrypted artifact.');
+    }
+    const header = artifactHeader(envelope);
+    if (!header.keyId || !header.createdAt || !/^[a-f0-9]{64}$/i.test(header.checksum)) {
+      throw new Error('Encrypted artifact metadata is invalid.');
+    }
+    if (envelope.algorithm !== 'AES-256-GCM') throw new Error('Encrypted artifact algorithm is not supported.');
+    if (!envelope.keyWrap || envelope.keyWrap.keyId !== header.keyId || envelope.keyWrap.namespace !== header.namespace) {
+      throw new Error('Encrypted artifact recovery key metadata does not match this backup.');
+    }
+    const iv = decodeSizedBase64(envelope.iv, 12, 'Encrypted artifact IV');
+    const ciphertext = decodeSizedBase64(envelope.ciphertext, null, 'Encrypted artifact ciphertext', 16);
+
+    let key = null;
+    if (opts.uid && opts.namespace) {
+      const stored = await getArtifactKey(opts.uid, opts.namespace);
+      if (stored && stored.keyId === header.keyId) key = stored.cryptoKey;
+    }
+    if (!key) key = await unwrapArtifactKey(envelope.keyWrap, opts.password);
+
+    let plaintext;
+    try {
+      const bytes = await crypto.subtle.decrypt({
+        name: 'AES-GCM', iv,
+        additionalData: new TextEncoder().encode(canonicalJSON(header))
+      }, key, ciphertext);
+      plaintext = new TextDecoder().decode(bytes);
+    } catch (_) {
+      throw new Error('The encrypted artifact is damaged or its key is incorrect.');
+    }
+    if ((await digestText(plaintext)) !== header.checksum) throw new Error('Encrypted artifact integrity check failed.');
+    let value = plaintext;
+    if (header.plaintextType === 'json') {
+      try { value = JSON.parse(plaintext); }
+      catch (_) { throw new Error('The encrypted artifact contains invalid JSON.'); }
+    }
+    return { plaintext, value, header };
   }
 
   async function exportEnvelope(uid, data, password) {
@@ -217,18 +486,30 @@
   }
 
   async function importEnvelope(envelope, password) {
-    if (!envelope || envelope.format !== 'firearms-vault-backup' || envelope.formatVersion !== 1) {
+    if (!envelope || envelope.format !== 'firearms-vault-backup' || ![1, ARTIFACT_FORMAT_VERSION].includes(Number(envelope.formatVersion))) {
       throw new Error('This is not a supported Firearms Vault backup.');
+    }
+    if (Number(envelope.formatVersion) === ARTIFACT_FORMAT_VERSION) {
+      const artifact = await decryptArtifact(envelope, { password });
+      const decoded = artifact.header.plaintextType === 'json' ? artifact.value : JSON.parse(artifact.plaintext);
+      const rawData = decoded && (decoded.data || decoded);
+      return global.VaultSecurity
+        ? global.VaultSecurity.normalizeDatabase(rawData, { regenerateInvalidIds: false, allowUnknownTopLevel: true })
+        : { data: rawData, warnings: [] };
     }
     let payload;
     if (envelope.encrypted) {
       if (!password) throw new Error('This backup requires its password.');
-      const salt = base64ToBytes(envelope.salt);
-      const iv = base64ToBytes(envelope.iv);
-      const key = await deriveKey(String(password), salt, ['decrypt']);
+      if (envelope.algorithm !== 'AES-256-GCM' || envelope.kdf !== 'PBKDF2-SHA256') {
+        throw new Error('This backup uses unsupported encryption settings.');
+      }
+      const salt = decodeSizedBase64(envelope.salt, 16, 'Encrypted backup salt');
+      const iv = decodeSizedBase64(envelope.iv, 12, 'Encrypted backup IV');
+      const ciphertext = decodeSizedBase64(envelope.ciphertext, null, 'Encrypted backup ciphertext', 16);
+      const key = await deriveKey(String(password), salt, ['decrypt'], envelope.iterations);
       let plaintext;
       try {
-        plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, base64ToBytes(envelope.ciphertext));
+        plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
       } catch (_) {
         throw new Error('The backup password is incorrect or the file is damaged.');
       }
@@ -248,6 +529,10 @@
     putState,
     getState,
     clearState,
+    putMetadata,
+    getMetadata,
+    deleteMetadata,
+    listMetadata,
     enqueue,
     listOutbox,
     removeOutbox,
@@ -258,6 +543,11 @@
     verifyBackup,
     exportEnvelope,
     importEnvelope,
+    provisionArtifactKey,
+    getArtifactKey,
+    deleteArtifactKey,
+    encryptArtifact,
+    decryptArtifact,
     digestText
   });
 })(window);
