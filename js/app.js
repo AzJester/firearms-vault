@@ -1793,7 +1793,7 @@ function fmtDate(d) { if(!d) return '--'; const p=d.split('-'); if(p.length!==3)
 function money(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 // Distinct status glyph (check / hourglass / partial / cross) so NFA stamp
 // state is conveyed by shape, not colour alone (WCAG 1.4.1 "use of colour").
-function stampIcon(s) { const m = { Approved: '✓', Pending: '⧖', Submitted: '◔', Denied: '✕' }; return m[s] ? ('<span class="si">' + m[s] + '</span>') : ''; }
+function stampIcon(s) { const m = { Approved: '✓', Pending: '◷', Submitted: '◔', Denied: '✕' }; return m[s] ? ('<span class="si" aria-hidden="true">' + m[s] + '</span>') : ''; }
 // Normalize a user-entered URL for use in href: only allow http(s)/mailto;
 // schemeless input gets https:// prepended; anything else (e.g. javascript:) is neutralized.
 function safeHref(u) {
