@@ -27,16 +27,16 @@
     'openQuickCaptureModal', 'openReminders', 'openReportBuilder', 'openReportPackageModal', 'openSettingsModal', 'openShareModal', 'openSyncCenter',
     'openWishlistModal', 'openQuickCaptureExistingMatch', 'pickDispDealer', 'printInventory', 'printQR',
     'quickAmmoAdjust', 'reminderGo', 'removeCustomField', 'removeDoc', 'removeEncryption', 'requestPersistentStorage',
-    'reconnectIndependentBackup', 'removeImage', 'removeMfaFactor', 'removeReceipt', 'removeStampPdf', 'removeTag',
+    'reconnectIndependentBackup', 'removeAccessoryImage', 'removeImage', 'removeMfaFactor', 'removeReceipt', 'removeStampPdf', 'removeTag',
     'render', 'renderImageGallery', 'resolveSyncChanges', 'restoreDownloadedBackup', 'retrySyncFromCenter', 'revokeShare', 'rotateImage', 'rteCmd', 'rteLink',
     'runDataQualityCheck', 'runDataSafetyCheck', 'runIndependentBackupNow', 'saveAccessory', 'saveAmmo', 'saveDealer',
     'saveFirearm', 'saveMaintenanceEntry', 'saveToFile', 'saveWishlistItem',
     'searchScannedSerial', 'selectBackup', 'selectTagSuggestion', 'setDashRange',
-    'setDealerArea', 'setDealerSort', 'setEncryption', 'setPrivacyMode', 'setQuickCaptureCategory', 'setView', 'setWishlistFilter', 'setupIndependentBackup',
+    'setAccessoryGroup', 'setAccessorySort', 'setDealerArea', 'setDealerSort', 'setEncryption', 'setPrivacyMode', 'setQuickCaptureCategory', 'setView', 'setWishlistFilter', 'setupIndependentBackup',
     'showShortcutsHelp', 'showTagSuggestions', 'sortTable', 'toggleBulkSelect',
     'toggleDashboardAnalytics', 'toggleDealerFavorite', 'toggleFilters', 'toggleNFAFields', 'togglePrivacyMode',
     'toggleTheme', 'undoDelete', 'updateReportPackageModePreset', 'updateReportPackagePreset', 'verifyMfaEnrollment', 'viewDocumentInBrowser',
-    'analyzeQuickCaptureImage',
+    'analyzeQuickCaptureImage', 'handleAccessoryImageUpload',
     'viewReceiptInBrowser', 'viewStampPdf', 'window.print', 'Auth.signOut', 'CloudSync.syncNow'
   ]);
 

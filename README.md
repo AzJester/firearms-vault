@@ -15,7 +15,9 @@ published from this repository through a test-gated GitHub Pages workflow.
 Open registration is disabled; access is limited to accounts created by the
 administrator.
 
-Version 2.2 adds Collection Health, searchable field-by-field activity history
+Version 2.3 adds sortable and groupable accessory views by item, manufacturer,
+or weapon system, plus cloud-synced accessory photos. Version 2.2 added
+Collection Health, searchable field-by-field activity history
 with single-record restore, mobile Quick Capture, encrypted insurance/theft
 packages with redacted share copies, and verified weekly encrypted backups to a
 user-selected folder outside Supabase. Version 2.1 established the underlying
