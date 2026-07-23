@@ -951,6 +951,14 @@
     </div>
     <div class="modal-body">
       <div class="form-grid">
+        <div class="form-group full">
+          <label>Accessory Photos</label>
+          <button type="button" class="img-upload-area" id="accImgUploadArea" onclick="document.getElementById('accImgInput').click()">
+            <span class="upload-text">Click to upload photos (or drag &amp; drop)</span>
+          </button>
+          <div class="img-gallery" id="accImgGallery" aria-live="polite"></div>
+          <input type="file" id="accImgInput" accept="image/*" multiple style="display:none" onchange="handleAccessoryImageUpload(event)">
+        </div>
         <div class="form-group"><label>Accessory Name</label><input type="text" id="accName" placeholder="e.g. Vortex Razor HD Gen III"></div>
         <div class="form-group"><label>Category</label>
           <select id="accCategory">

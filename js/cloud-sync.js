@@ -1011,7 +1011,10 @@
         (firearm.documents || []).forEach(document => keys.add('doc:' + firearm.id + ':' + document.id));
       });
       (database.ammo || []).forEach(ammo => { const key = refKey(ammo.receipt); if (key) keys.add(key); });
-      (database.accessories || []).forEach(accessory => { const key = refKey(accessory.receipt); if (key) keys.add(key); });
+      (database.accessories || []).forEach(accessory => {
+        (accessory.images || []).forEach(id => keys.add(id));
+        const key = refKey(accessory.receipt); if (key) keys.add(key);
+      });
       return [...keys];
     },
 
@@ -1063,11 +1066,14 @@
 
       if (!mediaKey.includes(':')) {
         const firearm = (db.firearms || []).find(item => (item.images || []).some(id => String(id) === mediaKey));
-        const position = firearm ? (firearm.images || []).findIndex(id => String(id) === mediaKey) + 1 : 0;
+        const accessory = firearm ? null : (db.accessories || []).find(item => (item.images || []).some(id => String(id) === mediaKey));
+        const record = firearm || accessory;
+        const position = record ? (record.images || []).findIndex(id => String(id) === mediaKey) + 1 : 0;
         return {
-          key: mediaKey, type: 'photo', recordKind: 'firearm', recordId: firearm && firearm.id,
-          recordName: nameOf(firearm), filename: position ? 'Photo ' + position : 'Firearm photo',
-          label: 'Photo for ' + nameOf(firearm), accept: 'image/jpeg,image/png,image/webp,image/gif'
+          key: mediaKey, type: 'photo', recordKind: firearm ? 'firearm' : accessory ? 'accessory' : null,
+          recordId: record && record.id, recordName: nameOf(record),
+          filename: position ? 'Photo ' + position : 'Inventory photo',
+          label: 'Photo for ' + nameOf(record), accept: 'image/jpeg,image/png,image/webp,image/gif'
         };
       }
 
@@ -1118,6 +1124,11 @@
           firearm.images = (firearm.images || []).filter(id => String(id) !== String(key));
           if (firearm.images.length !== before) changed = true;
         });
+        (db.accessories || []).forEach(accessory => {
+          const before = (accessory.images || []).length;
+          accessory.images = (accessory.images || []).filter(id => String(id) !== String(key));
+          if (accessory.images.length !== before) changed = true;
+        });
         if (Object.prototype.hasOwnProperty.call(imagesDb || {}, key)) { delete imagesDb[key]; changed = true; }
       } else if (detail.type === 'document') {
         const firearm = (db.firearms || []).find(item => String(item.id) === String(detail.recordId));
@@ -1165,6 +1176,7 @@
       const isData = value => typeof value === 'string' && value.startsWith('data:');
       const referencedImages = new Set();
       (db.firearms || []).forEach(firearm => (firearm.images || []).forEach(id => referencedImages.add(String(id))));
+      (db.accessories || []).forEach(accessory => (accessory.images || []).forEach(id => referencedImages.add(String(id))));
       Object.entries(imagesDb || {}).forEach(([key, value]) => {
         if (referencedImages.has(String(key)) && isData(value)) media[key] = value;
       });
@@ -2186,7 +2198,10 @@
           available.has('doc:' + firearm.id + ':' + document.id));
       });
       (data.ammo || []).forEach(ammo => { ammo.receipt = keepRef(ammo.receipt); });
-      (data.accessories || []).forEach(accessory => { accessory.receipt = keepRef(accessory.receipt); });
+      (data.accessories || []).forEach(accessory => {
+        accessory.images = (accessory.images || []).filter(id => available.has(String(id)));
+        accessory.receipt = keepRef(accessory.receipt);
+      });
       return data;
     },
 

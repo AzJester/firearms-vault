@@ -1,7 +1,7 @@
 // =====================================================
 // APP VERSION
 // =====================================================
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.3.0';
 
 // =====================================================
 // DATA STRUCTURE & STATE
@@ -21,6 +21,7 @@ let editingAmmoId = null;
 let currentTab = 'all';
 let currentView = 'cards';
 let tempImages = [];
+let tempAccessoryImages = [];
 let thumbCache = {};   // imageId -> small downscaled data URL for fast card/table rendering
 let tempDocs = [];
 let tempTags = [];
@@ -32,6 +33,8 @@ let currentPassword = null;
 let currentImageIndex = 0;
 let editingMaintenanceId = null;
 let editingAccessoryId = null;
+let accessorySortField = 'item';
+let accessoryGroupField = 'none';
 let pendingWishlistMoveId = null;
 let tempReceipts = { f: null, fName: null, a: null, aName: null, acc: null, accName: null };
 
@@ -981,19 +984,29 @@ function idbDelete(key) {
   }));
 }
 
-function referencedFirearmImageIds() {
+function referencedInventoryImageIds() {
   const ids = new Set();
   (db.firearms || []).forEach(firearm => {
     (Array.isArray(firearm.images) ? firearm.images : []).forEach(id => {
       if (typeof id === 'string' && id) ids.add(id);
     });
   });
+  (db.accessories || []).forEach(accessory => {
+    (Array.isArray(accessory.images) ? accessory.images : []).forEach(id => {
+      if (typeof id === 'string' && id) ids.add(id);
+    });
+  });
   return ids;
+}
+
+// Keep the original public name for backup and release-safety callers.
+function referencedFirearmImageIds() {
+  return referencedInventoryImageIds();
 }
 
 function getReferencedFirearmImages() {
   const images = {};
-  referencedFirearmImageIds().forEach(id => {
+  referencedInventoryImageIds().forEach(id => {
     if (Object.prototype.hasOwnProperty.call(imagesDb || {}, id)) images[id] = imagesDb[id];
   });
   return images;
@@ -1003,7 +1016,7 @@ function referencedMediaKeysForExport() {
   if (window.CloudSync && typeof CloudSync.referencedMediaKeys === 'function') {
     return [...new Set(CloudSync.referencedMediaKeys(db).map(String).filter(Boolean))];
   }
-  return [...referencedFirearmImageIds()].map(String);
+  return [...referencedInventoryImageIds()].map(String);
 }
 
 function residentMediaBytes(key) {
@@ -1084,7 +1097,7 @@ function warnIncompleteMedia(result, operation, options) {
 }
 
 async function removeUnreferencedDraftImages(ids) {
-  const saved = referencedFirearmImageIds();
+  const saved = referencedInventoryImageIds();
   const candidates = [...new Set(Array.from(ids || []).filter(id => typeof id === 'string' && id))];
   for (const id of candidates) {
     if (saved.has(id)) continue;
@@ -2368,6 +2381,7 @@ async function buildThumbnails() {
   try {
     const ids = new Set();
     (db.firearms || []).forEach(f => (f.images || []).forEach(i => { if (i) ids.add(i); }));
+    (db.accessories || []).forEach(a => (a.images || []).forEach(i => { if (i) ids.add(i); }));
     let made = false;
     for (const id of ids) {
       if (thumbCache[id] || !imagesDb[id]) continue;
@@ -3083,7 +3097,17 @@ function captureRecoveryExtras(modalId) {
     return { receipt: tempReceipts.a, receiptName: tempReceipts.aName };
   }
   if (modalId === 'accessoryModal') {
-    return { receipt: tempReceipts.acc, receiptName: tempReceipts.accName };
+    const imageData = {};
+    tempAccessoryImages.forEach(id => {
+      if (typeof imagesDb[id] === 'string') imageData[id] = imagesDb[id];
+    });
+    return {
+      receipt: tempReceipts.acc,
+      receiptName: tempReceipts.accName,
+      images: [...tempAccessoryImages],
+      ownedImages: [..._accessoryDraftOwnedImages],
+      imageData
+    };
   }
   return {};
 }
@@ -3541,6 +3565,22 @@ async function applyRecoveryExtras(snapshot) {
     tempReceipts.aName = tempReceipts.a ? String(extras.receiptName || 'Receipt') : null;
     showReceiptInUploadArea('a', tempReceipts.a, tempReceipts.aName);
   } else if (snapshot.modalId === 'accessoryModal') {
+    const imageData = extras.imageData && typeof extras.imageData === 'object' ? extras.imageData : {};
+    for (const [imageId, unsafeData] of Object.entries(imageData)) {
+      const dataURL = recoveryAttachment(unsafeData, 'image');
+      if (!dataURL || typeof imageId !== 'string' || imageId.length > 200) continue;
+      imagesDb[imageId] = dataURL;
+      try { await idbPut(imageId, dataURL); }
+      catch (error) { console.warn('A recovered accessory photo could not be cached:', error); }
+    }
+    tempAccessoryImages = Array.isArray(extras.images)
+      ? extras.images.filter(id => typeof id === 'string' && !!imagesDb[id]).slice(0, 50)
+      : [];
+    _accessoryDraftOwnedImages.clear();
+    (Array.isArray(extras.ownedImages) ? extras.ownedImages : []).forEach(id => {
+      if (typeof id === 'string' && id.length <= 200) _accessoryDraftOwnedImages.add(id);
+    });
+    renderAccessoryImageGallery();
     tempReceipts.acc = recoveryAttachment(extras.receipt, 'document');
     tempReceipts.accName = tempReceipts.acc ? String(extras.receiptName || 'Receipt') : null;
     showReceiptInUploadArea('acc', tempReceipts.acc, tempReceipts.accName);
@@ -4352,6 +4392,16 @@ imgArea.addEventListener('drop',e=>{
   }
 });
 
+const accImgArea = document.getElementById('accImgUploadArea');
+accImgArea.addEventListener('dragover', e => { e.preventDefault(); accImgArea.style.borderColor = 'var(--accent)'; });
+accImgArea.addEventListener('dragleave', () => { accImgArea.style.borderColor = ''; });
+accImgArea.addEventListener('drop', e => {
+  e.preventDefault();
+  accImgArea.style.borderColor = '';
+  const files = Array.from(e.dataTransfer.files || []).filter(file => file.type.startsWith('image/'));
+  files.forEach(file => { void queueAccessoryImage(file).catch(() => {}); });
+});
+
 const stampArea=document.getElementById('stampUploadArea');
 stampArea.addEventListener('dragover',e=>{e.preventDefault();stampArea.style.borderColor='var(--accent)';});
 stampArea.addEventListener('dragleave',()=>{stampArea.style.borderColor='';});
@@ -4481,10 +4531,66 @@ async function deleteAmmo(id) {
 // =====================================================
 // ACCESSORIES
 // =====================================================
+const _accessoryDraftOwnedImages = new Set();
+
+function queueAccessoryImage(file) {
+  const session = captureAttachmentSession('accessoryModal');
+  return trackPendingVaultOperation((async () => {
+    const source = await readFileAsDataURL(file);
+    requireAttachmentSession(session);
+    const id = generateId();
+    const compressed = await compressImage(source, 1600, 0.80);
+    requireAttachmentSession(session);
+    imagesDb[id] = compressed;
+    await idbPut(id, compressed);
+    if (!attachmentSessionActive(session)) {
+      delete imagesDb[id];
+      try { await idbDelete(id); } catch (_) {}
+      requireAttachmentSession(session);
+    }
+    tempAccessoryImages.push(id);
+    _accessoryDraftOwnedImages.add(id);
+    renderAccessoryImageGallery();
+    markModalDirty('accessoryModal');
+    return id;
+  })()).catch(error => {
+    if (error && error.code === 'STALE_ATTACHMENT_SESSION') return null;
+    toast('Accessory photo could not be added: ' + (error.message || error), 'error', 7000);
+    throw error;
+  });
+}
+
+function handleAccessoryImageUpload(event) {
+  Array.from(event.target.files || []).forEach(file => {
+    if (file.type.startsWith('image/')) void queueAccessoryImage(file).catch(() => {});
+  });
+  event.target.value = '';
+}
+
+function renderAccessoryImageGallery() {
+  const gallery = document.getElementById('accImgGallery');
+  if (!gallery) return;
+  gallery.innerHTML = tempAccessoryImages.map((imageId, index) => {
+    const src = imagesDb[imageId];
+    if (!src) return '';
+    return `<div class="accessory-photo-thumb">
+      <img src="${src}" alt="Accessory photo ${index + 1}" class="img-thumbnail">
+      <button type="button" class="remove-thumbnail" aria-label="Remove accessory photo ${index + 1}" onclick="removeAccessoryImage(${index})">&#215;</button>
+    </div>`;
+  }).join('');
+}
+
+function removeAccessoryImage(index) {
+  tempAccessoryImages.splice(index, 1);
+  renderAccessoryImageGallery();
+  markModalDirty('accessoryModal');
+}
+
 function openAccessoryModal(editId) {
   editingAccessoryId = editId || null;
   endRecordEdit('accessories');
   beginAttachmentSession('accessoryModal');
+  _accessoryDraftOwnedImages.clear();
   document.getElementById('accessoryModalTitle').textContent = editId ? 'Edit Accessory' : 'Add Accessory';
   document.getElementById('saveAccBtn').textContent = editId ? 'Update Accessory' : 'Save Accessory';
   populateFirearmDropdown();
@@ -4500,6 +4606,8 @@ function openAccessoryModal(editId) {
     document.getElementById('accCondition').value = a.condition || 'New';
     document.getElementById('accFirearm').value = a.firearmId || '';
     document.getElementById('accNotes').innerHTML = a.notes || '';
+    tempAccessoryImages = Array.isArray(a.images) ? [...a.images] : [];
+    renderAccessoryImageGallery();
     tempReceipts.acc = a.receipt || null; tempReceipts.accName = a.receiptName || null;
     showReceiptInUploadArea('acc', a.receipt, a.receiptName);
     beginRecordEdit('accessories', editId, collectAccessoryFormRecord(editId));
@@ -4507,13 +4615,26 @@ function openAccessoryModal(editId) {
   document.getElementById('accessoryModal').classList.add('open');
 }
 
-function closeAccessoryModal() { endAttachmentSession('accessoryModal'); document.getElementById('accessoryModal').classList.remove('open'); editingAccessoryId = null; endRecordEdit('accessories'); }
+function closeAccessoryModal() {
+  const discardedImages = [..._accessoryDraftOwnedImages];
+  endAttachmentSession('accessoryModal');
+  document.getElementById('accessoryModal').classList.remove('open');
+  editingAccessoryId = null;
+  tempAccessoryImages = [];
+  _accessoryDraftOwnedImages.clear();
+  renderAccessoryImageGallery();
+  endRecordEdit('accessories');
+  void removeUnreferencedDraftImages(discardedImages);
+}
 
 function clearAccessoryForm() {
   ['accName','accBrand','accModel','accSerial','accPrice','accDate'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('accNotes').innerHTML = '';
   document.getElementById('accCategory').value = 'Optic'; document.getElementById('accCondition').value = 'New';
   document.getElementById('accFirearm').value = '';
+  tempAccessoryImages = [];
+  _accessoryDraftOwnedImages.clear();
+  renderAccessoryImageGallery();
   tempReceipts.acc = null; tempReceipts.accName = null; resetReceiptUpload('acc');
 }
 
@@ -4540,6 +4661,7 @@ function collectAccessoryFormRecord(id) {
     purchaseDate: document.getElementById('accDate').value,
     condition: document.getElementById('accCondition').value,
     firearmId: document.getElementById('accFirearm').value,
+    images: [...tempAccessoryImages],
     notes: rteValue('accNotes'),
     receipt: tempReceipts.acc,
     receiptName: tempReceipts.accName
@@ -4548,7 +4670,7 @@ function collectAccessoryFormRecord(id) {
 
 async function saveAccessory() {
   return withFormSaveLock('accessory', 'saveAccBtn', async () => {
-    if (!await waitForFormAttachments('accessoryModal', 'Receipt')) return false;
+    if (!await waitForFormAttachments('accessoryModal', 'Photos or receipt')) return false;
     const name = document.getElementById('accName').value.trim();
     if (!name) { showFieldError(document.getElementById('accName'), 'Enter an accessory name.'); return false; }
     let data = collectAccessoryFormRecord(editingAccessoryId || generateId());
@@ -4574,6 +4696,11 @@ async function saveAccessory() {
     const attemptedDatabase = structuredClone(db);
     if (!await saveData()) { await keepFormOpenAfterSaveFailure(previousDatabase, attemptedDatabase, 'accessoryModal', 'Accessory'); return false; }
     if (!await resolveRecoveredFormSession('accessoryModal')) { holdCommittedRecoveredForm('accessoryModal', 'saveAccBtn'); return true; }
+    const imageCleanup = [
+      ..._accessoryDraftOwnedImages,
+      ...((previousRecord && Array.isArray(previousRecord.images)) ? previousRecord.images : [])
+    ];
+    await removeUnreferencedDraftImages(imageCleanup);
     render(); closeAccessoryModal();
     if (editResult && editResult.conflicts.length) toast('Accessory saved with your field-by-field conflict choices.', 'success', 6000);
     return true;
@@ -4591,6 +4718,36 @@ function getFirearmLabel(firearmId) {
   return f ? (f.make || '') + ' ' + (f.model || '') : 'Unknown';
 }
 
+function accessoryFieldValue(accessory, field) {
+  if (field === 'manufacturer') return (accessory.brand || 'Unknown manufacturer').trim();
+  if (field === 'weapon') return accessory.firearmId ? getFirearmLabel(accessory.firearmId) : 'In storage / unassigned';
+  return (accessory.name || 'Unnamed item').trim();
+}
+
+function compareAccessories(left, right, field) {
+  const bySelected = accessoryFieldValue(left, field).localeCompare(
+    accessoryFieldValue(right, field), undefined, { numeric: true, sensitivity: 'base' }
+  );
+  if (bySelected) return bySelected;
+  return accessoryFieldValue(left, 'item').localeCompare(
+    accessoryFieldValue(right, 'item'), undefined, { numeric: true, sensitivity: 'base' }
+  );
+}
+
+function setAccessorySort(field) {
+  if (!['item', 'manufacturer', 'weapon'].includes(field)) return;
+  accessorySortField = field;
+  saveSortPreference();
+  renderAccessoriesTab();
+}
+
+function setAccessoryGroup(field) {
+  if (!['none', 'item', 'manufacturer', 'weapon'].includes(field)) return;
+  accessoryGroupField = field;
+  saveSortPreference();
+  renderAccessoriesTab();
+}
+
 function renderAccessoriesTab() {
   document.getElementById('cardGrid').style.display = 'none';
   document.getElementById('tableContainer').style.display = 'block';
@@ -4600,11 +4757,32 @@ function renderAccessoriesTab() {
   if (search) {
     items = items.filter(a => (a.name||'').toLowerCase().includes(search) || (a.brand||'').toLowerCase().includes(search) || (a.model||'').toLowerCase().includes(search) || (a.category||'').toLowerCase().includes(search) || (a.serial||'').toLowerCase().includes(search) || getFirearmLabel(a.firearmId).toLowerCase().includes(search) || (a.notes||'').replace(/<[^>]*>/g,'').toLowerCase().includes(search));
   }
+  items = [...items].sort((a, b) => compareAccessories(a, b, accessorySortField));
   updatePageContext(items.length);
   const totalValue = items.reduce((s, a) => s + (parseFloat(a.price) || 0), 0);
-  let h = `<div style="padding: 16px 24px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; font-size: 0.86rem; font-weight: 600;">
-    <span>Accessories shown: <span style="color: var(--accent);">${items.length}</span></span>
-    <span>Value shown: <span style="color: var(--accent);">$${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></span>
+  const selected = (value, current) => value === current ? ' selected' : '';
+  let h = `<div class="accessory-toolbar">
+    <div class="accessory-summary">
+      <span>Accessories shown: <strong>${items.length}</strong></span>
+      <span>Value shown: <strong>$${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
+    </div>
+    <div class="accessory-view-controls" aria-label="Accessory organization">
+      <label for="accessorySort">Sort by
+        <select id="accessorySort" onchange="setAccessorySort(this.value)">
+          <option value="item"${selected('item', accessorySortField)}>Item name</option>
+          <option value="manufacturer"${selected('manufacturer', accessorySortField)}>Manufacturer</option>
+          <option value="weapon"${selected('weapon', accessorySortField)}>Weapon system</option>
+        </select>
+      </label>
+      <label for="accessoryGroup">Group by
+        <select id="accessoryGroup" onchange="setAccessoryGroup(this.value)">
+          <option value="none"${selected('none', accessoryGroupField)}>No grouping</option>
+          <option value="item"${selected('item', accessoryGroupField)}>Item name</option>
+          <option value="manufacturer"${selected('manufacturer', accessoryGroupField)}>Manufacturer</option>
+          <option value="weapon"${selected('weapon', accessoryGroupField)}>Weapon system</option>
+        </select>
+      </label>
+    </div>
   </div>`;
   if (items.length === 0) {
     h += db.accessories.length === 0
@@ -4612,12 +4790,18 @@ function renderAccessoriesTab() {
       : tabEmpty('🔍', 'No accessories match your search', 'Try a different term or clear the search box.', '');
     document.getElementById('tableContainer').innerHTML = h; return;
   }
-  h += '<table class="data-table"><thead><tr><th>Name</th><th>Category</th><th>Brand</th><th>Model / Part #</th><th>Assigned To</th><th>Condition</th><th>Price</th><th>Date</th><th>Receipt</th><th></th></tr></thead><tbody>';
-  items.forEach(a => {
+  h += '<table class="data-table accessory-table"><thead><tr><th>Photo</th><th>Name</th><th>Category</th><th>Manufacturer</th><th>Model / Part #</th><th>Weapon System</th><th>Condition</th><th>Price</th><th>Date</th><th>Receipt</th><th></th></tr></thead><tbody>';
+  const renderAccessoryRow = a => {
     const firearmLabel = getFirearmLabel(a.firearmId);
     const pr = a.price ? money(a.price) : '--';
     const hasReceipt = a.receipt ? true : false;
+    const photoId = Array.isArray(a.images) ? a.images[0] : null;
+    const photoSrc = photoId ? (thumbCache[photoId] || imagesDb[photoId]) : null;
+    const photo = photoSrc
+      ? `<img class="thumb" loading="lazy" src="${photoSrc}" alt="${escAttr((a.name || 'Accessory') + ' photo')}">`
+      : '<span class="thumb-placeholder" aria-hidden="true">&#10022;</span>';
     h += `<tr>
+      <td>${photo}</td>
       <td style="font-weight:600;">${esc(a.name||'--')}</td>
       <td><span style="padding:2px 8px;background:var(--bg3);border-radius:4px;font-size:0.78rem;">${esc(a.category||'--')}</span></td>
       <td>${esc(a.brand||'--')}</td><td>${esc(a.model||'--')}</td>
@@ -4626,7 +4810,27 @@ function renderAccessoriesTab() {
       <td>${hasReceipt ? '<button class="btn btn-small btn-outline" onclick="event.stopPropagation();viewReceiptInBrowser(\''+a.id+'\',\'accessories\')">View</button> <a href="'+a.receipt+'" download="'+(a.receiptName||'receipt')+'" onclick="event.stopPropagation();" class="btn btn-small btn-file" style="text-decoration:none;display:inline-block;">DL</a>' : '<span style="color:var(--text3);">--</span>'}</td>
       <td style="text-align:right;white-space:nowrap;"><button class="btn btn-small btn-outline" data-item-id="${escAttr(a.id)}" onclick="openAccessoryModal(this.dataset.itemId)">Edit</button> <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); deleteAccessory('${a.id}')">Delete</button></td>
     </tr>`;
-  });
+  };
+  if (accessoryGroupField === 'none') {
+    items.forEach(renderAccessoryRow);
+  } else {
+    const groups = new Map();
+    items.forEach(item => {
+      const label = accessoryFieldValue(item, accessoryGroupField);
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(item);
+    });
+    [...groups.entries()]
+      .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }))
+      .forEach(([label, groupItems]) => {
+        const groupValue = groupItems.reduce((sum, item) => sum + (parseFloat(item.price) || 0), 0);
+        h += `<tr class="accessory-group-row"><th colspan="11" scope="rowgroup">
+          <span>${esc(label)}</span>
+          <span>${groupItems.length} ${groupItems.length === 1 ? 'item' : 'items'} · ${money(groupValue)}</span>
+        </th></tr>`;
+        groupItems.forEach(renderAccessoryRow);
+      });
+  }
   h += '</tbody></table>';
   document.getElementById('tableContainer').innerHTML = h;
 }
@@ -6513,7 +6717,9 @@ function saveSortPreference() {
     localStorage.setItem(LS_SORT_KEY, JSON.stringify({
       col: sortCol, dir: sortDir,
       cardSort: document.getElementById('cardSort').value,
-      view: currentView
+      view: currentView,
+      accessorySort: accessorySortField,
+      accessoryGroup: accessoryGroupField
     }));
   } catch(e) {}
 }
@@ -6526,6 +6732,8 @@ function loadSortPreference() {
     if (pref.col) sortCol = pref.col;
     if (pref.dir) sortDir = pref.dir;
     if (pref.cardSort) document.getElementById('cardSort').value = pref.cardSort;
+    if (['item', 'manufacturer', 'weapon'].includes(pref.accessorySort)) accessorySortField = pref.accessorySort;
+    if (['none', 'item', 'manufacturer', 'weapon'].includes(pref.accessoryGroup)) accessoryGroupField = pref.accessoryGroup;
     if (pref.view) { currentView = pref.view; setView(currentView); }
   } catch(e) {}
 }

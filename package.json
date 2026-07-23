@@ -1,6 +1,6 @@
 {
   "name": "firearms-db",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "description": "Firearms Vault — a private, cloud-synced collection manager.",
