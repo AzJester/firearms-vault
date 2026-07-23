@@ -1012,7 +1012,7 @@
       });
       (database.ammo || []).forEach(ammo => { const key = refKey(ammo.receipt); if (key) keys.add(key); });
       (database.accessories || []).forEach(accessory => {
-        (accessory.images || []).forEach(id => keys.add(id));
+        (Array.isArray(accessory.images) ? accessory.images : []).forEach(id => keys.add(id));
         const key = refKey(accessory.receipt); if (key) keys.add(key);
       });
       return [...keys];
@@ -1066,9 +1066,12 @@
 
       if (!mediaKey.includes(':')) {
         const firearm = (db.firearms || []).find(item => (item.images || []).some(id => String(id) === mediaKey));
-        const accessory = firearm ? null : (db.accessories || []).find(item => (item.images || []).some(id => String(id) === mediaKey));
+        const accessory = firearm ? null : (db.accessories || []).find(item =>
+          (Array.isArray(item.images) ? item.images : []).some(id => String(id) === mediaKey));
         const record = firearm || accessory;
-        const position = record ? (record.images || []).findIndex(id => String(id) === mediaKey) + 1 : 0;
+        const position = record
+          ? (Array.isArray(record.images) ? record.images : []).findIndex(id => String(id) === mediaKey) + 1
+          : 0;
         return {
           key: mediaKey, type: 'photo', recordKind: firearm ? 'firearm' : accessory ? 'accessory' : null,
           recordId: record && record.id, recordName: nameOf(record),
@@ -1125,8 +1128,9 @@
           if (firearm.images.length !== before) changed = true;
         });
         (db.accessories || []).forEach(accessory => {
-          const before = (accessory.images || []).length;
-          accessory.images = (accessory.images || []).filter(id => String(id) !== String(key));
+          const images = Array.isArray(accessory.images) ? accessory.images : [];
+          const before = images.length;
+          accessory.images = images.filter(id => String(id) !== String(key));
           if (accessory.images.length !== before) changed = true;
         });
         if (Object.prototype.hasOwnProperty.call(imagesDb || {}, key)) { delete imagesDb[key]; changed = true; }
@@ -1176,7 +1180,8 @@
       const isData = value => typeof value === 'string' && value.startsWith('data:');
       const referencedImages = new Set();
       (db.firearms || []).forEach(firearm => (firearm.images || []).forEach(id => referencedImages.add(String(id))));
-      (db.accessories || []).forEach(accessory => (accessory.images || []).forEach(id => referencedImages.add(String(id))));
+      (db.accessories || []).forEach(accessory =>
+        (Array.isArray(accessory.images) ? accessory.images : []).forEach(id => referencedImages.add(String(id))));
       Object.entries(imagesDb || {}).forEach(([key, value]) => {
         if (referencedImages.has(String(key)) && isData(value)) media[key] = value;
       });
@@ -2199,7 +2204,8 @@
       });
       (data.ammo || []).forEach(ammo => { ammo.receipt = keepRef(ammo.receipt); });
       (data.accessories || []).forEach(accessory => {
-        accessory.images = (accessory.images || []).filter(id => available.has(String(id)));
+        accessory.images = (Array.isArray(accessory.images) ? accessory.images : [])
+          .filter(id => available.has(String(id)));
         accessory.receipt = keepRef(accessory.receipt);
       });
       return data;

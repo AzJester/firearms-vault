@@ -108,6 +108,34 @@ test('missing historical media cannot be reported as a full restore', async ({ p
   expect(result.record.images).toEqual([]);
 });
 
+test('missing historical accessory photos cannot be reported as a full restore', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const before = { id: 'accessory-one', name: 'Earlier Optic', brand: 'Example', images: ['expired-accessory-photo'] };
+    const current = { id: 'accessory-one', name: 'Current Optic', brand: 'Example', images: [] };
+    db.accessories = [structuredClone(current)];
+    db.auditTrail = [VaultActivity.createEntry('edit', 'accessory', 'Current Optic', '', {
+      collection: 'accessories', recordId: 'accessory-one', before, after: current,
+      mediaManifest: { 'expired-accessory-photo': { sha256: 'b'.repeat(64), path: 'expired-accessory-photo' } }
+    })];
+    const confirmations = [true, false];
+    window.confirmDialog = async () => confirmations.shift();
+    window.saveData = async () => true;
+    const originalDownload = CloudSync.downloadMedia;
+    const originalResident = CloudSync.residentMedia;
+    CloudSync.downloadMedia = async () => ({ ok: false, failures: [{ key: 'expired-accessory-photo' }] });
+    CloudSync.residentMedia = () => null;
+    const outcome = await VaultActivity.restore(db.auditTrail[0].id);
+    CloudSync.downloadMedia = originalDownload;
+    CloudSync.residentMedia = originalResident;
+    return { outcome, record: structuredClone(db.accessories[0]) };
+  });
+
+  expect(result.outcome.status).toBe('attachment-unavailable');
+  expect(result.outcome.missingMedia).toEqual(['expired-accessory-photo']);
+  expect(result.record.name).toBe('Current Optic');
+  expect(result.record.images).toEqual([]);
+});
+
 test('serial and value comparisons are marked for privacy masking', async ({ page }) => {
   const sensitiveCount = await page.evaluate(() => {
     const before = { id: 'one', serial: 'PRIVATE-1', price: '100', images: [], documents: [] };

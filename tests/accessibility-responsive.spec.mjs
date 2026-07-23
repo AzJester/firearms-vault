@@ -90,6 +90,78 @@ test('application shell does not overflow at the release breakpoints', async ({ 
   }
 });
 
+test('every populated collection view stays contained at the release breakpoints', async ({ page }) => {
+  await mockSignedOutSupabase(page);
+  await page.goto('/index.html');
+  await revealEmptyApp(page);
+  await page.evaluate(() => {
+    db.firearms = [
+      { id: 'view-active', make: 'Example Arms', model: 'Active Carbine', type: 'Rifle', caliber: '5.56', status: 'Active', isNFA: false, images: [], tags: [] },
+      { id: 'view-nfa', make: 'Example Arms', model: 'Registered SBR', type: 'Rifle', caliber: '300 BLK', status: 'Active', isNFA: true, nfaType: 'SBR', stampStatus: 'Approved', images: [], tags: [] },
+      { id: 'view-sold', make: 'Example Arms', model: 'Transferred Pistol', type: 'Pistol', caliber: '9mm', status: 'Sold', images: [], tags: [] }
+    ];
+    db.ammo = [
+      { id: 'view-ammo', brand: 'Example Ammunition', caliber: '9mm', quantity: 250, purchaseDate: '2026-01-01', pricePerRound: 0.28, location: 'Main safe' }
+    ];
+    db.accessories = [
+      { id: 'view-optic', name: 'Red Dot Sight', brand: 'Example Optics', model: 'RDS-1', firearmId: 'view-active', price: '450', images: [] },
+      { id: 'view-sling', name: 'Two Point Sling', brand: 'Example Gear', model: 'Sling-2', firearmId: 'view-nfa', price: '75', images: [] },
+      { id: 'view-case', name: 'Travel Case', brand: '', model: 'Case-3', firearmId: '', price: '125', images: [] }
+    ];
+    db.wishlist = [
+      { id: 'view-wish', make: 'Example Works', model: 'Future Build', caliber: '5.56', type: 'Rifle', targetPrice: '1400', priority: 'High' }
+    ];
+    db.dealers = [
+      { id: 'view-dealer', name: 'Example Federal Firearms License Dealer With A Long Name', address: '1234 Example Boulevard, Phoenix, Arizona', phone: '555-0100', favorite: true }
+    ];
+  });
+
+  const tabs = ['dashboard', 'all', 'nfa', 'disposed', 'ammo', 'accessories', 'wishlist', 'dealers'];
+  const viewports = [
+    { width: 360, height: 800 },
+    { width: 768, height: 900 },
+    { width: 1024, height: 900 },
+    { width: 1440, height: 900 }
+  ];
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    for (const tab of tabs) {
+      const groups = tab === 'accessories' ? ['none', 'item', 'manufacturer', 'weapon'] : [null];
+      for (const group of groups) {
+        const measurements = await page.evaluate(({ tabName, groupName }) => {
+          currentTab = tabName;
+          if (groupName) accessoryGroupField = groupName;
+          render();
+          const tables = [...document.querySelectorAll('#mainContent .table-container')].filter(element =>
+            getComputedStyle(element).display !== 'none');
+          return {
+            viewport: document.documentElement.clientWidth,
+            page: document.documentElement.scrollWidth,
+            tables: tables.map(element => {
+              const rect = element.getBoundingClientRect();
+              return {
+                left: rect.left,
+                right: rect.right,
+                clientWidth: element.clientWidth,
+                scrollWidth: element.scrollWidth,
+                overflowX: getComputedStyle(element).overflowX
+              };
+            })
+          };
+        }, { tabName: tab, groupName: group });
+        const label = `${tab}${group ? '/' + group : ''} at ${viewport.width}px`;
+        expect(measurements.page, label).toBeLessThanOrEqual(measurements.viewport + 1);
+        for (const table of measurements.tables) {
+          expect(table.left, label).toBeGreaterThanOrEqual(-1);
+          expect(table.right, label).toBeLessThanOrEqual(measurements.viewport + 1);
+          expect(['auto', 'scroll']).toContain(table.overflowX);
+          expect(table.scrollWidth, label).toBeGreaterThanOrEqual(table.clientWidth);
+        }
+      }
+    }
+  }
+});
+
 test('populated dark inventory, detail gallery, and dealer views have no serious axe violations', async ({ browser }) => {
   const context = await browser.newContext({ bypassCSP: true });
   const page = await context.newPage();

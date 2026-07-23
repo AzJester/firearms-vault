@@ -126,7 +126,10 @@
       if (record.stampPdf) keys.push('stamp:firearm:' + record.id);
       (record.documents || []).forEach(document => keys.push('doc:' + record.id + ':' + document.id));
     } else if (collection === 'ammo' && record.receipt) keys.push('receipt:ammo:' + record.id);
-    else if (collection === 'accessories' && record.receipt) keys.push('receipt:accessory:' + record.id);
+    else if (collection === 'accessories') {
+      (Array.isArray(record.images) ? record.images : []).forEach(id => keys.push(String(id)));
+      if (record.receipt) keys.push('receipt:accessory:' + record.id);
+    }
     return [...new Set(keys)];
   }
 

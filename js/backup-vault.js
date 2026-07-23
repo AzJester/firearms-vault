@@ -258,12 +258,20 @@
       keys.push(key);
     });
     (snapshot.accessories || []).forEach((record) => {
-      if (!record.receipt) return;
-      const key = 'receipt:accessory:' + record.id;
-      const data = residentMedia(key);
-      if (!data) throw new Error('An accessory receipt is unavailable on this device.');
-      record.receipt = data;
-      keys.push(key);
+      (Array.isArray(record.images) ? record.images : []).forEach((imageId) => {
+        const key = String(imageId);
+        const data = residentMedia(key);
+        if (!data) throw new Error('A referenced accessory photo is unavailable on this device.');
+        snapshot.images[key] = data;
+        keys.push(key);
+      });
+      if (record.receipt) {
+        const key = 'receipt:accessory:' + record.id;
+        const data = residentMedia(key);
+        if (!data) throw new Error('An accessory receipt is unavailable on this device.');
+        record.receipt = data;
+        keys.push(key);
+      }
     });
     return [...new Set(keys)].sort();
   }

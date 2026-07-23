@@ -85,3 +85,36 @@ test('accessory photos are captured, previewed, and included in cloud media', as
   expect(result.recordKind).toBe('accessory');
   expect(result.recordName).toBe('Test Optic');
 });
+
+test('pre-photo accessory records remain visible and sync-safe after upgrade', async ({ page }) => {
+  await openApp(page);
+  const result = await page.evaluate(() => {
+    db.firearms = [];
+    db.accessories = [
+      { id: 'legacy-number', name: 12345, brand: 67890, model: 'Legacy numeric fields', images: 'not-an-array' },
+      { id: 'legacy-empty', name: '', brand: '', model: 'Legacy empty fields' }
+    ];
+    currentTab = 'accessories';
+    accessorySortField = 'manufacturer';
+    accessoryGroupField = 'manufacturer';
+    render();
+    const keys = CloudSync.referencedMediaKeys(db);
+    const media = CloudSync.collectMedia();
+    const reconciled = CloudSync.reconcileStructuredManifest(db, {});
+    return {
+      shown: document.querySelector('.accessory-summary strong').textContent,
+      rows: document.querySelectorAll('.accessory-table tbody tr:not(.accessory-group-row)').length,
+      keys,
+      mediaKeys: Object.keys(media),
+      reconciledCount: reconciled.accessories.length,
+      normalizedImages: reconciled.accessories.map(item => item.images)
+    };
+  });
+
+  expect(result.shown).toBe('2');
+  expect(result.rows).toBe(2);
+  expect(result.keys).toEqual([]);
+  expect(result.mediaKeys).toEqual([]);
+  expect(result.reconciledCount).toBe(2);
+  expect(result.normalizedImages).toEqual([[], []]);
+});

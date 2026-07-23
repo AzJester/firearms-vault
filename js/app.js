@@ -1,7 +1,7 @@
 // =====================================================
 // APP VERSION
 // =====================================================
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.3.1';
 
 // =====================================================
 // DATA STRUCTURE & STATE
@@ -2381,7 +2381,7 @@ async function buildThumbnails() {
   try {
     const ids = new Set();
     (db.firearms || []).forEach(f => (f.images || []).forEach(i => { if (i) ids.add(i); }));
-    (db.accessories || []).forEach(a => (a.images || []).forEach(i => { if (i) ids.add(i); }));
+    (db.accessories || []).forEach(a => (Array.isArray(a.images) ? a.images : []).forEach(i => { if (i) ids.add(i); }));
     let made = false;
     for (const id of ids) {
       if (thumbCache[id] || !imagesDb[id]) continue;
@@ -4719,9 +4719,9 @@ function getFirearmLabel(firearmId) {
 }
 
 function accessoryFieldValue(accessory, field) {
-  if (field === 'manufacturer') return (accessory.brand || 'Unknown manufacturer').trim();
-  if (field === 'weapon') return accessory.firearmId ? getFirearmLabel(accessory.firearmId) : 'In storage / unassigned';
-  return (accessory.name || 'Unnamed item').trim();
+  if (field === 'manufacturer') return String(accessory.brand || 'Unknown manufacturer').trim() || 'Unknown manufacturer';
+  if (field === 'weapon') return accessory.firearmId ? String(getFirearmLabel(accessory.firearmId)) : 'In storage / unassigned';
+  return String(accessory.name || 'Unnamed item').trim() || 'Unnamed item';
 }
 
 function compareAccessories(left, right, field) {

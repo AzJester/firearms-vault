@@ -514,12 +514,19 @@ table.data-table tbody tr:hover { background: var(--accent-light); }
 
 /* Full-height work surfaces for forms, settings, details, and recovery. */
 .modal-overlay, .detail-overlay { background: rgba(10, 18, 23, 0.67); backdrop-filter: blur(5px); }
-.modal { border-radius: 16px; box-shadow: var(--vault-shadow-md); }
-.modal-header { min-height: 66px; padding: 15px 20px; border-bottom-color: var(--border-light); }
+.modal {
+  max-height: min(900px, calc(100dvh - 60px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  box-shadow: var(--vault-shadow-md);
+}
+.modal-header { min-height: 66px; flex: 0 0 auto; padding: 15px 20px; border-bottom-color: var(--border-light); }
 .modal-header h2 { font-size: 1.375rem; letter-spacing: -0.02em; }
 .modal-close { min-width: 44px; min-height: 44px; border-radius: 10px; }
-.modal-body { padding: 20px; }
-.modal-footer { min-height: 68px; padding: 12px 20px; background: var(--bg2); border-top-color: var(--border-light); }
+.modal-body { min-height: 0; flex: 1 1 auto; max-height: none; overflow-y: auto; padding: 20px; }
+.modal-footer { min-height: 68px; flex: 0 0 auto; padding: 12px 20px; background: var(--bg2); border-top-color: var(--border-light); }
 .form-draft-status { margin-right: auto; color: var(--text2); font-size: 0.8125rem; }
 #formModal { justify-content: flex-end; padding: 0; }
 #formModal .modal {
@@ -602,10 +609,10 @@ body.modal-active .bottom-nav { display: none !important; }
 .menu-item { min-height: 44px; font-size: 0.875rem; }
 
 /* Feature centers share a wide, calm workspace instead of a stack of alerts. */
-.feature-modal { width: min(1040px, calc(100vw - 40px)); max-width: 1040px !important; max-height: min(900px, calc(100dvh - 40px)); }
+.feature-modal { width: min(1040px, calc(100vw - 40px)); max-width: 1040px !important; max-height: min(900px, calc(100dvh - 60px)); }
 .feature-modal .modal-header > div { min-width: 0; }
 .feature-kicker { margin: 0 0 3px; color: var(--text3); font-size: 0.7rem; font-weight: 800; letter-spacing: 0.11em; text-transform: uppercase; }
-.feature-modal-body { min-height: 420px; }
+.feature-modal-body { min-height: 0; }
 .activity-toolbar { display: grid; grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(130px, 1fr)) auto; gap: 10px; align-items: end; padding: 14px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg3); }
 .activity-toolbar label { display: grid; gap: 5px; color: var(--text2); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.035em; }
 .activity-toolbar input, .activity-toolbar select { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); color: var(--text); font: inherit; }
@@ -794,6 +801,7 @@ body.modal-active .bottom-nav { display: none !important; }
   #settingsModal .modal { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; }
   #settingsModal { padding: 0; }
   #settingsModal .modal-body { padding: 0; max-height: calc(100dvh - 134px); }
+  #activityCenterModal, #healthModal, #quickCaptureModal, #reportPackageModal { padding: 0; }
   .feature-modal { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; }
   .feature-modal-body { max-height: calc(100dvh - 134px); }
   .activity-toolbar { grid-template-columns: 1fr 1fr; }
