@@ -109,6 +109,31 @@ test('saving a legacy accessory migrates links lazily and unlinking preserves it
   expect(await page.evaluate(() => VaultEquipment.buildCost(db, 'host-a'))).toBe(1000);
 });
 
+test('an open links form rejects concurrent assignment changes without overwriting them', async ({ page }) => {
+  await page.evaluate(() => VaultEquipment.open('host-a', 'firearms', 'can'));
+  await page.locator('#equipmentCurrentHost').selectOption('host-a');
+  await page.evaluate(() => {
+    const source = db.firearms.find(item => item.id === 'can');
+    source.hostFirearmIds = ['host-b'];
+    source.currentHostId = 'host-b';
+    source.notes = 'Concurrent assignment preserved';
+  });
+  await page.getByRole('button', { name: 'Save links', exact: true }).click();
+  await expect(page.locator('#equipmentLinksError')).toContainText('changed while this form was open');
+  await expect(page.locator('#equipmentLinksModal')).toBeVisible();
+  expect(await page.evaluate(() => db.firearms.find(item => item.id === 'can'))).toMatchObject({
+    hostFirearmIds: ['host-b'], currentHostId: 'host-b', notes: 'Concurrent assignment preserved'
+  });
+  expect(await page.evaluate(() => db.auditTrail.length)).toBe(0);
+  await page.evaluate(() => VaultEquipment.open('host-a', 'firearms', 'can'));
+  await expect(page.locator('#equipmentCurrentHost')).toHaveValue('host-b');
+  await page.getByRole('button', { name: 'Save links', exact: true }).click();
+  await expect(page.locator('#equipmentLinksModal')).toBeHidden();
+  expect(await page.evaluate(() => db.firearms.find(item => item.id === 'can'))).toMatchObject({
+    hostFirearmIds: ['host-a', 'host-b'], currentHostId: 'host-b', notes: 'Concurrent assignment preserved'
+  });
+});
+
 test('forged missing, disposed, self, or unavailable host links are rejected before mutation', async ({ page }) => {
   for (const invalid of ['missing', 'sold', 'can', 'ordered']) {
     await page.evaluate(invalidId => {

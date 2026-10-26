@@ -76,6 +76,16 @@ const surfaces = [
   ['batchEditModal', () => { bulkSelected = new Set(['surface-host-0', 'surface-host-1']); updateBulkBar(); VaultCollectionTools.openBatch(); }]
 ];
 
+test('phone More menu opens the range-session workflow', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 700 });
+  await setup(page);
+  await page.locator('#bnMoreMenu [data-menu-toggle]').click();
+  await page.locator('#bnMoreMenu [data-range-open]').click();
+  await expect(page.locator('#rangeSessionModal')).toHaveClass(/\bopen\b/);
+  await expect(page.locator('#rsFirearm')).toBeVisible();
+  await expect(page.locator('#bnMoreMenu')).not.toHaveClass(/\bopen\b/);
+});
+
 for (const viewport of [{ width: 360, height: 700 }, { width: 1024, height: 900 }]) {
   for (const [id, opener] of surfaces) {
     test(`${id} owns its scrolling and contains buttons without serious accessibility issues at ${viewport.width}x${viewport.height}`, async ({ page }, testInfo) => {

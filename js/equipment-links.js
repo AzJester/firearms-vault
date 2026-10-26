@@ -13,6 +13,8 @@
   const database = () => typeof db === 'object' && db ? db : { firearms: [], accessories: [] };
   const idOf = value => typeof value === 'string' ? value.trim() : '';
   const uniqueIds = values => Array.from(new Set((Array.isArray(values) ? values : []).map(idOf).filter(Boolean)));
+  const linkState = record => JSON.stringify({ hostFirearmIds: record.hostFirearmIds, currentHostId: record.currentHostId, firearmId: record.firearmId });
+  let linkBaseline = null;
   const currency = value => typeof money === 'function' ? money(value) : '$' + Number(value || 0).toFixed(2);
   const price = record => Math.max(0, parseFloat(record && record.price) || 0);
 
@@ -145,6 +147,7 @@
 
   function populateLinks() {
     const entry = getEntry(selectedKey);
+    linkBaseline = entry ? { key: selectedKey, state: linkState(entry.record) } : null;
     const fields = document.getElementById('equipmentLinkFields');
     const save = document.getElementById('saveEquipmentLinksBtn');
     const view = document.getElementById('equipmentViewSourceBtn');
@@ -195,6 +198,10 @@
     if (saving) return false;
     const entry = getEntry(selectedKey);
     if (!entry) { setError('Choose an existing equipment record.'); return false; }
+    if (!linkBaseline || linkBaseline.key !== selectedKey || linkBaseline.state !== linkState(entry.record)) {
+      setError('These equipment links changed while this form was open. Reopen the links to review the current assignments before saving.');
+      return false;
+    }
     const hosts = selectedHosts();
     const current = idOf(document.getElementById('equipmentCurrentHost').value) || null;
     const available = new Set(availableHosts(database(), entry.record.id).map(host => host.id));
