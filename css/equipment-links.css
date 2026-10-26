@@ -1,0 +1,35 @@
+.equipment-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.equipment-heading h3 { margin: 0; }
+.equipment-help, .equipment-empty { color: var(--text2); font-size: .82rem; line-height: 1.55; margin: 10px 0 14px; }
+.equipment-empty { color: var(--text3); }
+.equipment-subheading { color: var(--text2); font-size: .8rem; font-weight: 650; margin: 18px 0 8px; }
+.equipment-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; background: var(--bg3); border-radius: 7px; border-left: 3px solid var(--blue); margin-top: 8px; }
+.equipment-row-copy { min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.equipment-row-copy strong { font-size: .87rem; }
+.equipment-row-copy > span { color: var(--text2); font-size: .77rem; }
+.equipment-row-copy .equipment-assignment { color: var(--text3); }
+.equipment-row-copy .equipment-assignment.is-current { color: var(--green); font-weight: 600; }
+.equipment-row-actions, .equipment-secondary-actions { display: flex; gap: 7px; flex-wrap: wrap; flex-shrink: 0; }
+.equipment-host-summary { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.equipment-host-summary li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 6px; background: var(--bg3); font-size: .82rem; overflow-wrap: anywhere; }
+.equipment-host-summary li span { color: var(--text2); flex-shrink: 0; }
+.equipment-links-modal .modal { width: min(640px, calc(100vw - 32px)); }
+.equipment-links-modal form { display: flex; flex-direction: column; min-height: 0; }
+.equipment-links-modal .modal-body { overflow-y: auto; }
+.equipment-links-modal [hidden] { display: none !important; }
+.equipment-host-fieldset { margin: 16px 0; border: 1px solid var(--border); padding: 12px; border-radius: 7px; min-width: 0; }
+.equipment-host-fieldset legend { font-size: .85rem; font-weight: 600; padding: 0 5px; }
+.equipment-host-fieldset .equipment-help { margin-top: 0; }
+.equipment-host-list { max-height: 230px; overflow-y: auto; display: grid; gap: 5px; }
+.equipment-host-option { display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: 5px; background: var(--bg3); font-size: .84rem; cursor: pointer; }
+.equipment-host-option input { width: 18px; height: 18px; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
+.equipment-host-option span { overflow-wrap: anywhere; }
+.equipment-error { color: var(--red); font-size: .84rem; padding: 10px 12px; border: 1px solid var(--red); border-radius: 6px; line-height: 1.5; }
+@media (max-width: 540px) {
+  .equipment-row { align-items: flex-start; flex-direction: column; }
+  .equipment-row-actions { width: 100%; }
+  .equipment-row-actions .btn { flex: 1; }
+  .equipment-heading > .btn { width: 100%; }
+  .equipment-host-summary li { flex-direction: column; gap: 4px; }
+  .equipment-links-modal .modal { width: 100%; }
+}

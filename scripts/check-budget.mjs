@@ -4,6 +4,8 @@ import path from 'node:path';
 const dist = path.join(process.cwd(), 'dist');
 const core = [
   'index.html', 'css/fonts.css', 'css/styles.css', 'css/vault-ui.css', 'js/config.js',
+  'css/item-details.css', 'css/equipment-links.css', 'css/range-sessions.css', 'css/collection-tools.css',
+  'js/collection-model.js', 'js/item-details.js', 'js/equipment-links.js', 'js/range-sessions.js', 'js/collection-tools.js', 'js/collection-init.js',
   'js/security.js', 'js/data-safety.js', 'js/asset-loader.js', 'js/data-quality.js', 'js/supabase-client.js',
   'js/app.js', 'js/cloud-sync.js', 'js/auth.js', 'js/action-runtime.js', 'js/ui-shell.js', 'js/pwa-register.js', 'vendor/supabase.js',
   'vendor/fonts/InterVariable.woff2', 'manifest.webmanifest', 'icons/icon.svg'

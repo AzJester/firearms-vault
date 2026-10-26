@@ -7,6 +7,8 @@ const CACHE_PREFIX = 'firearms-vault-';
 const CORE_SHELL = [
   './', './index.html', './share.html',
   './css/fonts.css', './css/styles.css', './css/vault-ui.css',
+  './css/item-details.css', './css/equipment-links.css', './css/range-sessions.css', './css/collection-tools.css',
+  './js/collection-model.js', './js/item-details.js', './js/equipment-links.js', './js/range-sessions.js', './js/collection-tools.js', './js/collection-init.js',
   './js/config.js', './js/security.js', './js/data-safety.js', './js/asset-loader.js', './js/data-quality.js',
   './js/supabase-client.js', './js/app.js', './js/cloud-sync.js', './js/backup-vault.js', './js/collection-health.js',
   './js/activity-center.js', './js/quick-capture.js', './js/report-packages.js', './js/auth.js', './js/action-runtime.js', './js/ui-shell.js',

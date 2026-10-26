@@ -1,0 +1,17 @@
+.item-field-help { color: var(--text3); font-size: 0.78rem; line-height: 1.5; margin: 0; }
+.item-details-disclosure .form-group textarea { width: 100%; min-height: 84px; resize: vertical; }
+.item-service-notes { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text2); font-size: 0.85rem; margin: 12px 0 0; }
+.item-copy-modal { max-width: 580px; }
+.item-copy-modal .modal-body > p { font-size: 0.86rem; line-height: 1.55; margin: 0 0 16px; }
+.item-copy-modal .item-copy-source { font-weight: 650; color: var(--text); }
+.item-copy-options { margin: 0 0 18px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.item-copy-options legend { padding: 0 5px; font-size: 0.83rem; font-weight: 600; }
+.item-copy-options label { display: grid; grid-template-columns: 18px 1fr; align-items: start; gap: 6px 10px; padding: 9px 0; font-size: 0.86rem; line-height: 1.45; color: var(--text); cursor: pointer; }
+.item-copy-options input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }
+.item-copy-options small { grid-column: 2; display: block; color: var(--text3); font-size: 0.76rem; }
+#duplicateOptionsError { color: var(--danger, #dc4b4b); }
+.item-purchase-details a { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .item-copy-modal .modal-footer { flex-wrap: wrap; }
+  .item-copy-modal .modal-footer .btn { flex: 1; min-width: 120px; }
+}

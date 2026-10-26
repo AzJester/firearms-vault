@@ -17,6 +17,12 @@ A failed validation or browser test prevents deployment. The build also emits
 
 ## Database migrations
 
+The 2.4 collection workflow release does not require a SQL migration. Its new
+fields, equipment links, and range history are stored in the existing owner
+document, while saved views live in that document's settings. Deployment smoke
+checks verify every script and stylesheet declared by the entry page against
+the build's integrity manifest.
+
 `supabase/schema.sql` is idempotent and represents the complete desired schema.
 Before deploying client code that requires a new RPC or column:
 

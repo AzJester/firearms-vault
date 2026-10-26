@@ -1,7 +1,7 @@
 // =====================================================
 // APP VERSION
 // =====================================================
-const APP_VERSION = '2.3.1';
+const APP_VERSION = '2.4.0';
 
 // =====================================================
 // DATA STRUCTURE & STATE
@@ -404,7 +404,7 @@ function refreshSensitiveElements(root) {
     const el = document.getElementById(id); if (el) el.classList.add('sensitive-value');
   });
   scope.querySelectorAll('.mono-id, [data-sensitive]').forEach(el => el.classList.add('sensitive-value'));
-  scope.querySelectorAll('input[type="email"], input[id*="Serial"], input[id*="Price"], input[id*="FFL"]').forEach(el => el.classList.add('sensitive-input'));
+  scope.querySelectorAll('input[type="email"], input[id*="Serial"], input[id*="Price"], input[id*="Value"], input[id*="OrderReference"], input[id*="Tracking"], input[id*="FFL"]').forEach(el => el.classList.add('sensitive-input'));
   scope.querySelectorAll('.card-detail, .detail-field, .sv-grid > div, .dash-kpi, .dash-list-item').forEach(group => {
     const label = group.querySelector('label, .dash-kpi-label, .label');
     if (!label || !/(serial|value|price|investment|budget|email|ffl)/i.test(label.textContent)) return;
@@ -805,7 +805,7 @@ function updateFilterChips() {
   const fbtn = document.getElementById('filterBtn');
   if (!chipsEl) return;
   const firearmView = ['all', 'nfa', 'disposed'].includes(currentTab);
-  const defs = [['searchBox', 'Search'], ['filterType', 'Type'], ['filterCaliber', 'Caliber'], ['filterTag', 'Tag'], ['filterCondition', 'Condition']];
+  const defs = [['searchBox', 'Search'], ['filterType', 'Type'], ['filterCaliber', 'Caliber'], ['filterTag', 'Tag'], ['filterCondition', 'Condition'], ...(window.VaultCollectionTools ? VaultCollectionTools.extraFilters.map(([id, label]) => [id, label]) : [])];
   const active = [];
   defs.forEach(([id, label]) => { const el = document.getElementById(id); if (el) { const v = (el.value || '').trim(); if (v) active.push({ id, label, v }); } });
   if (fbtn) fbtn.innerHTML = '&#9776; Filters' + (active.length ? ' <span class="fbtn-count">' + active.length + '</span>' : '');
@@ -816,7 +816,7 @@ function updateFilterChips() {
     '<button class="chip-clear" onclick="clearAllFilters()">Clear all</button>';
 }
 function clearOneFilter(id) { const el = document.getElementById(id); if (el) { el.value = ''; render(); } }
-function clearAllFilters() { ['searchBox', 'filterType', 'filterCaliber', 'filterTag', 'filterCondition'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; }); render(); }
+function clearAllFilters() { (window.VaultCollectionTools ? VaultCollectionTools.filterIds : ['searchBox', 'filterType', 'filterCaliber', 'filterTag', 'filterCondition']).forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; }); render(); }
 window.clearOneFilter = clearOneFilter;
 window.clearAllFilters = clearAllFilters;
 
@@ -1757,6 +1757,7 @@ function computeReminders() {
       text: 'Low ammo: ' + ((a.caliber || '') + ' ' + (a.brand || '')).trim() + ' — ' + (a.quantity || 0) + ' left (alert at ' + a.lowStock + ')' });
   });
   const rank = { high: 0, med: 1, low: 2 };
+  if (window.VaultRange) out.push(...VaultRange.reminders(db));
   out.sort((x, y) => rank[x.sev] - rank[y.sev]);
   return out;
 }
@@ -2065,6 +2066,8 @@ function renderDashboard() {
   const fVal = active.reduce((s, f) => s + (parseFloat(f.price) || 0), 0);
   const accVal = db.accessories.reduce((s, a) => s + (parseFloat(a.price) || 0), 0);
   const totalVal = fVal + accVal;
+  const replacementRecords = [...active, ...db.accessories].filter(f => VaultCollection.value(f, 'replacement') !== null);
+  const replacementTotal = replacementRecords.reduce((sum, f) => sum + VaultCollection.value(f, 'replacement'), 0);
   const totalAmmoRounds = db.ammo.reduce((s, a) => s + (parseInt(a.quantity) || 0), 0);
   const totalAmmoVal = db.ammo.reduce((s, a) => s + ((parseInt(a.quantity) || 0) * (parseFloat(a.pricePerRound) || 0)), 0);
   const totalInvested = totalVal + totalAmmoVal;
@@ -2108,8 +2111,10 @@ function renderDashboard() {
 
   // KPI cards
   const kpis = [
-    { icon: '\u{1F6E1}\u{FE0F}', label: 'Active Firearms', value: totalFirearms, color: '#3b82f6' },
-    { icon: '\u{1F4B0}', label: 'Collection Value', value: fmt$(totalVal), color: '#10b981' },
+    { icon: '\u{1F6E1}\u{FE0F}', label: 'In-possession Firearms', value: active.filter(f => VaultCollection.inPossession(f)).length, color: '#3b82f6' },
+    { icon: '\u{1F4E6}', label: 'Awaiting Acquisition', value: active.filter(f => !VaultCollection.inPossession(f)).length, color: '#f59e0b' },
+    { icon: '\u{1F4B0}', label: 'Collection Purchase Cost', value: fmt$(totalVal), color: '#10b981' },
+    { icon: '\u{1F4CB}', label: 'Replacement Value (' + replacementRecords.length + '/' + (active.length + db.accessories.length) + ' items valued)', value: fmt$(replacementTotal), color: '#06b6d4' },
     { icon: '\u{1F4C8}', label: 'Total Invested', value: fmt$(totalInvested), color: '#8b5cf6' },
     { icon: '\u{1F3AF}', label: 'Total Rounds', value: totalAmmoRounds.toLocaleString(), color: '#f59e0b' },
     { icon: '\u{1F4C4}', label: 'NFA Items', value: nfaCount, color: '#06b6d4' },
@@ -2173,7 +2178,7 @@ function renderDashboard() {
     '<div style="margin-top:4px;" class="dash-list-item"><span class="label">Ammo Types</span><span class="value">' + db.ammo.length + '</span></div></div>';
 
   container.innerHTML = alertsCard + kpiRow +
-    '<div class="dash-card dash-wide"><h3 class="dash-h3-flex"><span>Collection Value Over Time</span>' + rangeBtns + '</h3>' +
+    '<div class="dash-card dash-wide"><h3 class="dash-h3-flex"><span>Purchase Cost Over Time</span>' + rangeBtns + '</h3>' +
       (hasValueChart ? '<div class="dash-chart-wrap"><canvas id="valueChartCanvas"></canvas></div>' : note('Value history builds over time — check back after a few days of use.')) + '</div>' +
     highlightsCard +
     '<div class="dash-card"><h3>Recent Acquisitions</h3><div class="dash-list">' + recentList + '</div></div>' +
@@ -2239,6 +2244,7 @@ function getFilteredItems() {
   if (tagFilter) items = items.filter(f => f.tags && f.tags.includes(tagFilter));
   const condFilter = document.getElementById('filterCondition').value;
   if (condFilter) items = items.filter(f => f.condition === condFilter);
+  if (window.VaultCollectionTools) items = VaultCollectionTools.applyFilters(items);
 
   if (sortCol && currentView === 'table') {
     items = [...items].sort((a, b) => {
@@ -2300,7 +2306,7 @@ function render() {
     grid.style.display='none'; tc.style.display='none';
     const t = currentView==='cards'?grid:tc;
     t.style.display = currentView==='cards'?'grid':'block';
-    const hasFilters = ['searchBox', 'filterType', 'filterCaliber', 'filterTag', 'filterCondition']
+    const hasFilters = (window.VaultCollectionTools ? VaultCollectionTools.filterIds : ['searchBox', 'filterType', 'filterCaliber', 'filterTag', 'filterCondition'])
       .some(id => (document.getElementById(id)?.value || '').trim());
     if (!hasFilters && currentTab === 'nfa') {
       t.innerHTML = tabEmpty('📄', 'No NFA items yet', 'Use Add NFA item when you are ready to track a suppressor, SBR, or other regulated item.', '');
@@ -2318,6 +2324,7 @@ function render() {
     // Privacy mode must apply before this render yields; relying only on the
     // mutation observer can expose newly-created serials or values for a frame.
     refreshSensitiveElements(document);
+    if (window.VaultCollectionTools) VaultCollectionTools.refresh();
   }
 }
 
@@ -2426,11 +2433,12 @@ function renderCards(items) {
     return `<article class="card${disposed}"><input type="checkbox" class="card-checkbox" data-item-id="${escAttr(f.id)}" ${checked} onclick="toggleBulkSelect(this.dataset.itemId,event)"><button type="button" class="card-hitarea" data-card-id="${escAttr(f.id)}" aria-label="Open ${escAttr(itemName)} details" onclick="openDetail(this.dataset.cardId)"></button>${img}${nfa}${stamp}<div class="card-body">
       <div class="card-title">${esc(f.make||'')} ${esc(f.model||'')}</div>
       <div class="card-subtitle">${esc(f.type||'')} &middot; ${esc(f.caliber||'')}</div>
+      ${f.acquisitionStage && f.acquisitionStage !== 'In possession' ? '<div class="tag-pill acquisition-stage">' + esc(f.acquisitionStage) + '</div>' : ''}
       <div class="card-details">
         <div class="card-detail"><label>Serial</label><span>${esc(f.serial||'--')}</span></div>
         <div class="card-detail"><label>Barrel</label><span>${esc(f.barrel||'--')}</span></div>
         <div class="card-detail"><label>Condition</label><span>${esc(f.condition||'--')}</span></div>
-        <div class="card-detail"><label>Value</label><span>${p}</span></div>
+        <div class="card-detail"><label>Purchase cost</label><span>${p}</span></div>
       </div>${tags}</div></article>`;
   }).join('');
 }
@@ -2448,7 +2456,7 @@ function renderTable(items) {
     const pr = f.price?money(f.price):'--';
     let nfa='';
     if(f.isNFA){nfa=`<span class="nfa-tag">${esc(f.nfaType||'NFA')}</span>`;if(f.stampStatus){const c=f.stampStatus==='Approved'?'approved':f.stampStatus==='Pending'?'pending':'submitted';nfa+=` <span class="stamp-tag ${c}">${stampIcon(f.stampStatus)}${esc(f.stampStatus)}</span>`;}}
-    const status = f.status && f.status !== 'Active' ? `<span class="nfa-tag disposed-tag">${esc(f.status)}</span>` : '';
+    const status = f.status && f.status !== 'Active' ? `<span class="nfa-tag disposed-tag">${esc(f.status)}</span>` : f.acquisitionStage && f.acquisitionStage !== 'In possession' ? `<span class="nfa-tag">${esc(f.acquisitionStage)}</span>` : '';
     const pl = getProfitLoss(f);
     const plStr = pl !== null ? ` <span class="${pl>=0?'profit':'loss'}">${money(Math.abs(pl))} ${pl>=0?'+':'-'}</span>` : '';
     const tags = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${esc(t)}</span>`).join(' ') : '';
@@ -2540,6 +2548,10 @@ const RECORD_EDIT_LABELS = {
     dispNotes: 'Disposition notes', receipt: 'Receipt', receiptName: 'Receipt filename',
     documents: 'Documents', roundCount: 'Round count', warrantyExp: 'Warranty expiration',
     customFields: 'Custom fields'
+    , acquisitionStage: 'Purchase / availability', orderDate: 'Order date', expectedArrival: 'Expected arrival', orderReference: 'Order reference', trackingUrl: 'Tracking link', serviceNotes: 'Order / service notes',
+    replacementValue: 'Replacement value', valuationDate: 'Valuation date', valuationSource: 'Valuation source',
+    rangeSessions: 'Range sessions', maintenanceIntervalRounds: 'Service interval in rounds', maintenanceIntervalDays: 'Service interval in days', maintenanceBaselineRounds: 'Maintenance baseline',
+    hostFirearmIds: 'Associated hosts', currentHostId: 'Current host'
   },
   ammo: {
     caliber: 'Caliber', brand: 'Brand or type', quantity: 'Quantity', purchaseDate: 'Purchase date',
@@ -2547,6 +2559,7 @@ const RECORD_EDIT_LABELS = {
     notes: 'Notes', receipt: 'Receipt', receiptName: 'Receipt filename'
   },
   accessories: {
+    replacementValue: 'Replacement value', valuationDate: 'Valuation date', valuationSource: 'Valuation source', hostFirearmIds: 'Associated hosts', currentHostId: 'Current host',
     name: 'Accessory name', category: 'Category', brand: 'Manufacturer', model: 'Model or part number',
     serial: 'Serial number', price: 'Purchase price', purchaseDate: 'Purchase date', condition: 'Condition',
     firearmId: 'Assigned firearm', notes: 'Notes', receipt: 'Receipt', receiptName: 'Receipt filename'
@@ -2715,7 +2728,8 @@ document.getElementById('filterCondition').addEventListener('change', render);
 // =====================================================
 // FIREARM MODAL
 // =====================================================
-async function openAddModal() {
+async function openAddModal(options) {
+  if (options && options.freshDraft && !await prepareFirearmDuplicateDraft()) return false;
   editingId = null;
   endRecordEdit('firearms');
   beginAttachmentSession('formModal');
@@ -2726,7 +2740,8 @@ async function openAddModal() {
   document.getElementById('saveBtn').disabled = false;
   document.getElementById('saveBtn').textContent = 'Save Firearm';
   clearForm();
-  await restoreFirearmDraft();
+  if (options && options.freshDraft) formModal.dataset.firearmDraftKey = firearmDraftKey();
+  else await restoreFirearmDraft();
   syncFirearmDisclosure(null);
   populateDispDealerPicker();
   document.getElementById('formModal').classList.add('open');
@@ -2796,7 +2811,10 @@ const FIREARM_DRAFT_FIELDS = [
   'fMake', 'fModel', 'fSerial', 'fCaliber', 'fType', 'fBarrel', 'fDateAcquired', 'fPrice',
   'fCondition', 'fStatus', 'fIsNFA', 'fNFAType', 'fFormType', 'fDateSubmitted',
   'fDateApproved', 'fStampStatus', 'fRegType', 'fDispDate', 'fDispBuyer', 'fDispPrice',
-  'fDispFFL', 'fRoundCount', 'fWarrantyExp'
+  'fDispFFL', 'fRoundCount', 'fWarrantyExp',
+  'fAcquisitionStage', 'fOrderDate', 'fExpectedArrival', 'fOrderReference', 'fTrackingUrl', 'fServiceNotes',
+  'fReplacementValue', 'fValuationDate', 'fValuationSource',
+  'fMaintenanceIntervalRounds', 'fMaintenanceIntervalDays', 'fMaintenanceBaselineRounds'
 ];
 let _firearmDraftTimer = null;
 let _firearmDraftRevision = 0;
@@ -3651,6 +3669,21 @@ function activeFirearmDraftId(uid, create) {
 function firearmDraftKey(uid, draftId) {
   return firearmDraftPrefix(uid) + String(draftId || activeFirearmDraftId(uid, true));
 }
+async function prepareFirearmDuplicateDraft() {
+  const modal = document.getElementById('formModal');
+  if (modal.dataset.saving === 'true') { toast('Wait for the current save to finish before copying a record.', 'warning'); return false; }
+  if (modal.classList.contains('open')) {
+    if (editingId !== null || modal.dataset.recoveredForm === 'true') { toast('Finish or close the current edit before copying another item.', 'warning'); return false; }
+    if (!await flushFirearmDraft()) return false;
+  }
+  // Park the previous Add draft under its own key. The new copy gets a fresh
+  // active pointer; saving the copy clears only that pointer and its draft.
+  try { sessionStorage.setItem(firearmDraftActivePointerKey(), generateId()); }
+  catch (_) { toast('A separate draft could not be created on this device.', 'error'); return false; }
+  delete modal.dataset.recoveredForm; delete modal.dataset.recoveryOwner; delete modal.dataset.recoveryKey;
+  return true;
+}
+window.prepareFirearmDuplicateDraft = prepareFirearmDuplicateDraft;
 function firearmDraftResolutionKey(uid, draftKey) { return String(draftKey || firearmDraftKey(uid)) + ':resolved'; }
 function readFirearmDraftResolution(uid, draftKey) {
   try {
@@ -4014,6 +4047,8 @@ document.getElementById('formModal').addEventListener('input', saveFirearmDraftS
 document.getElementById('formModal').addEventListener('change', saveFirearmDraftSoon);
 
 function clearForm() {
+  if (window.VaultItemDetails) VaultItemDetails.clear();
+  if (window.VaultRange) VaultRange.formClear();
   pendingWishlistMoveId = null;
   ['fMake','fModel','fSerial','fCaliber','fBarrel','fDateAcquired','fPrice','fDateSubmitted','fDateApproved','fDispDate','fDispBuyer','fDispPrice','fDispFFL'].forEach(id => document.getElementById(id).value='');
   document.getElementById('fNotes').innerHTML='';
@@ -4048,6 +4083,8 @@ function clearForm() {
 }
 
 function populateForm(f) {
+  if (window.VaultItemDetails) VaultItemDetails.populate(f);
+  if (window.VaultRange) VaultRange.formPopulate(f);
   document.getElementById('fMake').value=f.make||'';
   document.getElementById('fModel').value=f.model||'';
   document.getElementById('fSerial').value=f.serial||'';
@@ -4130,6 +4167,8 @@ function collectFirearmFormRecord(id) {
   const status = document.getElementById('fStatus').value;
   return {
     id,
+    ...(window.VaultItemDetails ? VaultItemDetails.collect() : {}),
+    ...(window.VaultRange ? VaultRange.formCollect() || {} : {}),
     make: document.getElementById('fMake').value.trim(),
     model: document.getElementById('fModel').value.trim(),
     serial: document.getElementById('fSerial').value.trim(),
@@ -4172,6 +4211,8 @@ async function saveFirearm() {
     const make=document.getElementById('fMake').value.trim();
     const model=document.getElementById('fModel').value.trim();
     if(!make&&!model){showFieldError(document.getElementById('fMake'), 'Enter at least a manufacturer or model.');return false;}
+    if (window.VaultItemDetails) { const error = VaultItemDetails.validate(); if (error) { toast(error, 'error'); return false; } }
+    if (window.VaultRange && VaultRange.formCollect() === false) return false;
 
     let data = collectFirearmFormRecord(editingId || generateId());
     let editResult = null;
@@ -4619,9 +4660,12 @@ function openAccessoryModal(editId) {
     document.getElementById('accModel').value = a.model || '';
     document.getElementById('accSerial').value = a.serial || '';
     document.getElementById('accPrice').value = a.price || '';
+    document.getElementById('accReplacementValue').value = a.replacementValue ?? '';
+    document.getElementById('accValuationDate').value = a.valuationDate || '';
+    document.getElementById('accValuationSource').value = a.valuationSource || '';
     document.getElementById('accDate').value = a.purchaseDate || '';
     document.getElementById('accCondition').value = a.condition || 'New';
-    document.getElementById('accFirearm').value = a.firearmId || '';
+    document.getElementById('accFirearm').value = window.VaultEquipment ? VaultEquipment.currentHostId(a) : a.firearmId || '';
     document.getElementById('accNotes').innerHTML = a.notes || '';
     tempAccessoryImages = Array.isArray(a.images) ? [...a.images] : [];
     renderAccessoryImageGallery();
@@ -4645,7 +4689,7 @@ function closeAccessoryModal() {
 }
 
 function clearAccessoryForm() {
-  ['accName','accBrand','accModel','accSerial','accPrice','accDate'].forEach(id => document.getElementById(id).value = '');
+  ['accName','accBrand','accModel','accSerial','accPrice','accDate','accReplacementValue','accValuationDate','accValuationSource'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('accNotes').innerHTML = '';
   document.getElementById('accCategory').value = 'Optic'; document.getElementById('accCondition').value = 'New';
   document.getElementById('accFirearm').value = '';
@@ -4658,7 +4702,7 @@ function clearAccessoryForm() {
 function populateFirearmDropdown() {
   const sel = document.getElementById('accFirearm'); const cur = sel.value;
   sel.innerHTML = '<option value="">Not Assigned / In Storage</option>';
-  db.firearms.filter(f => !f.status || f.status === 'Active').forEach(f => {
+  db.firearms.filter(f => window.VaultEquipment ? VaultEquipment.eligibleHost(f) : !f.status || f.status === 'Active').forEach(f => {
     const o = document.createElement('option'); o.value = f.id;
     o.textContent = (f.make || '') + ' ' + (f.model || '') + (f.serial ? ' (' + f.serial + ')' : '');
     sel.appendChild(o);
@@ -4667,6 +4711,9 @@ function populateFirearmDropdown() {
 }
 
 function collectAccessoryFormRecord(id) {
+  const previous = recordEditSessions.accessories?.id === id ? recordEditSessions.accessories.baselineRecord : db.accessories.find(item => item.id === id);
+  const host = document.getElementById('accFirearm').value;
+  const linked = previous && (previous.hostFirearmIds !== undefined || previous.currentHostId !== undefined);
   return {
     id,
     name: document.getElementById('accName').value.trim(),
@@ -4675,9 +4722,13 @@ function collectAccessoryFormRecord(id) {
     model: document.getElementById('accModel').value.trim(),
     serial: document.getElementById('accSerial').value.trim(),
     price: document.getElementById('accPrice').value,
+    replacementValue: document.getElementById('accReplacementValue').value,
+    valuationDate: document.getElementById('accValuationDate').value,
+    valuationSource: document.getElementById('accValuationSource').value.trim(),
     purchaseDate: document.getElementById('accDate').value,
     condition: document.getElementById('accCondition').value,
     firearmId: document.getElementById('accFirearm').value,
+    ...(linked ? { currentHostId: host || null, hostFirearmIds: [...new Set([...(previous.hostFirearmIds || []), ...(host ? [host] : [])])] } : {}),
     images: [...tempAccessoryImages],
     notes: rteValue('accNotes'),
     receipt: tempReceipts.acc,
@@ -4690,12 +4741,23 @@ async function saveAccessory() {
     if (!await waitForFormAttachments('accessoryModal', 'Photos or receipt')) return false;
     const name = document.getElementById('accName').value.trim();
     if (!name) { showFieldError(document.getElementById('accName'), 'Enter an accessory name.'); return false; }
+    const replacement = document.getElementById('accReplacementValue');
+    if (replacement.validity.badInput || replacement.value !== '' && (!Number.isFinite(Number(replacement.value)) || Number(replacement.value) < 0)) { showFieldError(replacement, 'Enter a replacement value of zero or more, or leave it blank.'); return false; }
     let data = collectAccessoryFormRecord(editingAccessoryId || generateId());
     let editResult = null;
     if (editingAccessoryId) {
       editResult = await mergeRecordEdit('accessories', editingAccessoryId, data);
       if (editResult.cancelled) return false;
       data = editResult.record;
+    }
+    if (window.VaultEquipment) {
+      const linked = data.hostFirearmIds !== undefined || data.currentHostId !== undefined;
+      const assigned = linked ? data.currentHostId || '' : data.firearmId || '';
+      const valid = !assigned || db.firearms.some(host => host.id === assigned && VaultEquipment.eligibleHost(host));
+      if (!valid || linked && (assigned && !(data.hostFirearmIds || []).includes(assigned) || (data.firearmId || '') !== assigned)) {
+        toast('The host links changed or that host is unavailable. Reopen the accessory and review its equipment links before saving.', 'error', 8000);
+        return false;
+      }
     }
     const previousDatabase = structuredClone(db);
     const previousRecord = editingAccessoryId ? previousDatabase.accessories.find(a => a.id === editingAccessoryId) || null : null;
@@ -4858,9 +4920,10 @@ function renderAccessoriesTab() {
 function openMaintenanceModal(firearmId) {
   editingMaintenanceId = firearmId;
   document.getElementById('maintenanceTitle').textContent = 'Add Maintenance Log Entry';
-  document.getElementById('mDate').value = new Date().toISOString().split('T')[0];
+  const today = new Date();
+  document.getElementById('mDate').value = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
   document.getElementById('mType').value = 'Cleaning';
-  document.getElementById('mRoundCount').value = '';
+  document.getElementById('mRoundCount').value = db.firearms.find(item => item.id === firearmId)?.roundCount || 0;
   document.getElementById('mParts').value = '';
   document.getElementById('mDescription').innerHTML = '';
   document.getElementById('maintenanceModal').classList.add('open');
@@ -4870,6 +4933,12 @@ function closeMaintenanceModal() { document.getElementById('maintenanceModal').c
 
 async function saveMaintenanceEntry() {
   return withFormSaveLock('maintenance', 'saveMaintenanceBtn', async () => {
+    const date = document.getElementById('mDate').value;
+    const today = new Date();
+    const localToday = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+    if (!date || date > localToday || !/^\d{4}-\d{2}-\d{2}$/.test(date) || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date) { toast('Choose a valid service date of today or earlier.', 'error'); return false; }
+    const reading = document.getElementById('mRoundCount').value;
+    if (reading !== '' && (!Number.isSafeInteger(Number(reading)) || Number(reading) < 0)) { toast('Enter a non-negative whole lifetime round count.', 'error'); return false; }
     const firearm = db.firearms.find(f => f.id === editingMaintenanceId);
     if (!firearm) return false;
     const previousDatabase = structuredClone(db);
@@ -4992,6 +5061,7 @@ function openDetail(id) {
   }
 
   let maintenanceH = '';
+  if (window.VaultEquipment) accessoriesH = VaultEquipment.buildHTML(f);
   if (f.maintenanceLog && f.maintenanceLog.length > 0) {
     maintenanceH = '<div class="detail-section"><h3>Maintenance History</h3>';
     const sorted = [...f.maintenanceLog].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -5061,7 +5131,7 @@ function openDetail(id) {
       <div class="detail-field"><label>Round Count</label><span>${f.roundCount||0}</span></div>
       <div class="detail-field"><label>Total Invested</label><span class="investment-badge">${money(getTotalInvestment(f.id))}</span></div>
       ${f.warrantyExp ? '<div class="detail-field"><label>Warranty</label><span class="warranty-'+getWarrantyStatus(f.warrantyExp)+'">'+(getWarrantyStatus(f.warrantyExp)==='expired'?'EXPIRED':getWarrantyStatus(f.warrantyExp)==='soon'?'Expiring Soon':fmtDate(f.warrantyExp))+'</span></div>' : ''}
-    </div>${(f.customFields&&f.customFields.length>0)?'<div class="detail-section"><h3>Custom Fields</h3><div class="detail-grid">'+f.customFields.map(cf=>'<div class="detail-field"><label>'+esc(cf.name)+'</label><span>'+esc(cf.value)+'</span></div>').join('')+'</div></div>':''}${notesH}${receiptH}${docsH}${dispositionH}${nfaH}${compatAmmo}${accessoriesH}${maintenanceH}`;
+    </div>${window.VaultItemDetails ? VaultItemDetails.detailHTML(f) : ''}${window.VaultRange ? VaultRange.detailHTML(f) : ''}${(f.customFields&&f.customFields.length>0)?'<div class="detail-section"><h3>Custom Fields</h3><div class="detail-grid">'+f.customFields.map(cf=>'<div class="detail-field"><label>'+esc(cf.name)+'</label><span>'+esc(cf.value)+'</span></div>').join('')+'</div></div>':''}${notesH}${receiptH}${docsH}${dispositionH}${nfaH}${compatAmmo}${accessoriesH}${maintenanceH}`;
 
   currentImageIndex = 0;
   document.getElementById('detailQRBtn').onclick=()=>{generateQR(id);};
@@ -5234,7 +5304,7 @@ function searchScannedSerial() {
 async function exportExcel() {
   if(db.firearms.length===0){toast('No data to export.');return;}
   if (!await ensureFeatureAsset('excel', 'Excel export')) return;
-  const allRows=db.firearms.map(f=>({'Make':f.make||'','Model':f.model||'','Serial Number':f.serial||'','Caliber':f.caliber||'','Type':f.type||'','Barrel Length':f.barrel||'','Date Acquired':fmtDate(f.dateAcquired),'Purchase Price':f.price?parseFloat(f.price):'','Condition':f.condition||'','Status':f.status||'Active','NFA Item':f.isNFA?'Yes':'No','Tags':(f.tags||[]).join(', '),'Notes':(f.notes||'').replace(/<[^>]*>/g,'')}));
+  const allRows=db.firearms.map(f=>({'Make':f.make||'','Model':f.model||'','Serial Number':f.serial||'','Caliber':f.caliber||'','Type':f.type||'','Barrel Length':f.barrel||'','Date Acquired':fmtDate(f.dateAcquired),'Purchase Price':f.price?parseFloat(f.price):'','Replacement Value':VaultCollection.value(f,'replacement')??'','Valuation Date':f.valuationDate||'','Valuation Source':f.valuationSource||'','Purchase / Availability':f.acquisitionStage||'In possession','Order Date':f.orderDate||'','Expected Arrival':f.expectedArrival||'','Order Reference':f.orderReference||'','Condition':f.condition||'','Status':f.status||'Active','NFA Item':f.isNFA?'Yes':'No','Tags':(f.tags||[]).join(', '),'Notes':(f.notes||'').replace(/<[^>]*>/g,'')}));
   const nfaRows=db.firearms.filter(f=>f.isNFA).map(f=>{
     let w='';if(f.dateSubmitted&&f.dateApproved)w=Math.round((new Date(f.dateApproved)-new Date(f.dateSubmitted))/86400000);
     else if(f.dateSubmitted&&['Pending','Submitted'].includes(f.stampStatus))w=Math.round((new Date()-new Date(f.dateSubmitted))/86400000)+' (pending)';
@@ -5300,19 +5370,23 @@ function setupFirearmFormDisclosure() {
     nodes.forEach(node => inner.appendChild(node));
   };
   wrap('firearmNotesDisclosure', 'Notes and documents', ['fNotes', 'fReceiptInput', 'docInput']);
-  wrap('firearmAdvancedDisclosure', 'Maintenance and custom fields', ['fRoundCount', 'fWarrantyExp', 'customFieldsContainer']);
+  wrap('firearmAdvancedDisclosure', 'Maintenance and custom fields', ['fRoundCount', 'fWarrantyExp', 'fMaintenanceIntervalRounds', 'fMaintenanceIntervalDays', 'fMaintenanceBaselineRounds', 'customFieldsContainer']);
 }
 function syncFirearmDisclosure(firearm) {
   const notes = document.querySelector('#firearmNotesDisclosure');
   const advanced = document.querySelector('#firearmAdvancedDisclosure');
   if (notes) notes.open = !!(firearm && (rteShow(firearm.notes) || firearm.receipt || (firearm.documents || []).length));
-  if (advanced) advanced.open = !!(firearm && ((firearm.roundCount || 0) > 0 || firearm.warrantyExp || (firearm.customFields || []).length));
+  if (advanced) advanced.open = !!(firearm && ((firearm.roundCount || 0) > 0 || firearm.warrantyExp || firearm.maintenanceIntervalRounds || firearm.maintenanceIntervalDays || (firearm.customFields || []).length));
 }
 setupFirearmFormDisclosure();
 
 const ModalAccessibility = (() => {
   const selector = '.modal-overlay, .detail-overlay, .firstrun-overlay, #cmdk, #lightbox';
   const closeActions = {
+    equipmentLinksModal: () => window.VaultEquipment && VaultEquipment.close(),
+    rangeSessionModal: () => window.VaultRange && VaultRange.close(),
+    duplicateOptionsModal: () => window.VaultItemDetails && VaultItemDetails.closeDuplicate(),
+    batchEditModal: () => window.VaultCollectionTools && VaultCollectionTools.closeBatch(),
     formModal: () => closeModal(), detailView: () => closeDetail(), ammoModal: () => closeAmmoModal(),
     accessoryModal: () => closeAccessoryModal(), maintenanceModal: () => closeMaintenanceModal(),
     backupModal: () => closeBackupModal(), cameraModal: () => closeCameraModal(),
@@ -6440,20 +6514,8 @@ function printInventory() {
 // DUPLICATE FIREARM
 // =====================================================
 function duplicateFirearm(id) {
-  const f = db.firearms.find(x => x.id === id);
-  if (!f) return;
-  const clone = JSON.parse(JSON.stringify(f));
-  clone.id = generateId();
-  clone.serial = '';
-  clone.maintenanceLog = [];
-  clone.roundCount = 0;
-  clone.notes = (clone.notes || '') + (clone.notes ? '<br>' : '') + '<em>Duplicated from ' + esc((f.make||'')+' '+(f.model||'')) + '</em>';
-  db.firearms.push(clone);
-  addAuditEntry('create','firearm',(clone.make||'')+' '+(clone.model||''),'Duplicated from an existing record', {
-    collection: 'firearms', recordId: clone.id, before: null, after: clone
-  });
-  saveData(); render();
-  toast('Duplicated! Edit the new entry to update the serial number.');
+  if (window.VaultItemDetails) return VaultItemDetails.openDuplicate(id);
+  toast('The copy form could not load. Reload the vault and try again.', 'error');
 }
 
 // =====================================================
@@ -6813,6 +6875,7 @@ function compressImage(dataUrl, maxWidth, quality) {
 // TOTAL INVESTMENT CALCULATOR
 // =====================================================
 function getTotalInvestment(firearmId) {
+  if (window.VaultEquipment) return VaultEquipment.buildCost(db, firearmId);
   const f = db.firearms.find(x => x.id === firearmId);
   if (!f) return 0;
   const fPrice = parseFloat(f.price) || 0;

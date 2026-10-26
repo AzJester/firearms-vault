@@ -109,6 +109,7 @@
       encrypt,
       password: String(source.password || ''),
       includeValues: source.includeValues !== undefined ? Boolean(source.includeValues) : true,
+      valueBasis: source.valueBasis === 'replacement' ? 'replacement' : 'purchase',
       includePhotos: source.includePhotos !== undefined ? Boolean(source.includePhotos) : mode === 'full',
       includeReceipts: source.includeReceipts !== undefined ? Boolean(source.includeReceipts) : mode === 'full',
       includeDocuments: source.includeDocuments !== undefined ? Boolean(source.includeDocuments) : mode === 'full',
@@ -134,9 +135,21 @@
     else if (opts.scope === 'selected') idSet = selectedIdSet();
     let records = idSet ? firearms.filter(item => idSet.has(String(item.id))) : firearms.slice();
     if (opts.scope === 'active' || (!opts.includeDisposed && opts.scope !== 'selected')) {
-      records = records.filter(item => !item.status || item.status === 'Active');
+      records = records.filter(item => (!item.status || item.status === 'Active') && (!global.VaultCollection || VaultCollection.inPossession(item)));
     }
-    return records;
+    return expandCurrentEquipment(records, opts, data);
+  }
+
+  function expandCurrentEquipment(records, opts, data) {
+    const expanded = records.slice(), ids = new Set(expanded.map(item => String(item.id)));
+    if (opts.includeAccessories && global.VaultEquipment) {
+      records.forEach(host => VaultEquipment.equipmentForHost(data, host.id).forEach(link => {
+        if (link.current && link.collection === 'firearms' && !ids.has(String(link.record.id))) {
+          ids.add(String(link.record.id)); expanded.push(link.record);
+        }
+      }));
+    }
+    return expanded;
   }
 
   function redactSerial(serial, mode) {
@@ -172,9 +185,16 @@
     };
     const serial = redactSerial(record.serial, opts.serialMode);
     if (serial) item.serial = serial;
-    if (opts.includeValues) item.documentedValue = numberOrNull(record.price);
+    if (opts.includeValues) item.documentedValue = numberOrNull(opts.valueBasis === 'replacement' ? record.replacementValue : record.price);
     if (record.isNFA) item.nfaType = String(record.nfaType || '').trim();
     if (opts.mode === 'full') {
+      item.acquisitionStage = String(record.acquisitionStage || 'In possession');
+      if (opts.includeValues) {
+        item.purchaseCost = numberOrNull(record.price);
+        item.replacementValue = numberOrNull(record.replacementValue);
+        item.valuationDate = String(record.valuationDate || '');
+        item.valuationSource = String(record.valuationSource || '');
+      }
       item.formType = String(record.formType || '').trim();
       item.stampStatus = String(record.stampStatus || '').trim();
       item.registrationType = String(record.regType || '').trim();
@@ -202,7 +222,7 @@
     return item;
   }
 
-  function accessorySnapshot(accessory, itemKey, includeValues) {
+  function accessorySnapshot(accessory, itemKey, includeValues, valueBasis) {
     const result = {
       itemKey,
       name: String(accessory.name || '').trim(),
@@ -210,20 +230,20 @@
       brand: String(accessory.brand || '').trim(),
       model: String(accessory.model || '').trim()
     };
-    if (includeValues) result.documentedValue = numberOrNull(accessory.price);
+    if (includeValues) result.documentedValue = numberOrNull(valueBasis === 'replacement' ? accessory.replacementValue : accessory.price);
     return result;
   }
 
   function buildSnapshot(records, options, sourceDb) {
     const opts = normalizeOptions(options);
     const data = sourceDb || database();
-    const originalRecords = Array.isArray(records) ? records : recordsForOptions(opts, data);
+    const originalRecords = expandCurrentEquipment(Array.isArray(records) ? records : recordsForOptions(opts, data), opts, data);
     const items = originalRecords.map((record, index) => itemSnapshot(record, index, opts));
     const itemKeys = new Map(originalRecords.map((record, index) => [String(record.id), items[index].itemKey]));
     const accessories = opts.includeAccessories
       ? (Array.isArray(data.accessories) ? data.accessories : [])
-        .filter(accessory => itemKeys.has(String(accessory.firearmId)))
-        .map(accessory => accessorySnapshot(accessory, itemKeys.get(String(accessory.firearmId)), opts.includeValues))
+        .filter(accessory => itemKeys.has(String(global.VaultEquipment ? VaultEquipment.currentHostId(accessory) : accessory.firearmId)))
+        .map(accessory => accessorySnapshot(accessory, itemKeys.get(String(global.VaultEquipment ? VaultEquipment.currentHostId(accessory) : accessory.firearmId)), opts.includeValues, opts.valueBasis))
       : [];
     const firearmValue = items.reduce((sum, item) => sum + (Number(item.documentedValue) || 0), 0);
     const accessoryValue = accessories.reduce((sum, item) => sum + (Number(item.documentedValue) || 0), 0);
@@ -239,6 +259,7 @@
       title: opts.title,
       purpose: opts.purpose,
       profile: opts.mode,
+      valueBasis: opts.valueBasis,
       privacy: {
         serialNumbers: opts.serialMode,
         exactDates: opts.includeExactDates,
@@ -252,23 +273,35 @@
       totals: {
         firearms: items.length,
         accessories: accessories.length,
-        documentedValue: Math.round((firearmValue + accessoryValue) * 100) / 100
+        documentedValue: Math.round((firearmValue + accessoryValue) * 100) / 100,
+        missingValues: opts.includeValues ? items.filter(item => item.documentedValue === null).length + accessories.filter(item => item.documentedValue === null).length : 0
       },
       items,
       accessories
     };
   }
 
-  function mediaDescriptors(records, options) {
+  function mediaDescriptors(records, options, sourceDb) {
     const opts = normalizeOptions(options);
+    const data = sourceDb || database();
+    const originalRecords = expandCurrentEquipment(Array.isArray(records) ? records : recordsForOptions(opts, data), opts, data);
     const descriptors = [];
-    records.forEach((record, index) => {
+    const keys = new Set();
+    const add = descriptor => {
+      if (!descriptor.key || keys.has(descriptor.key)) return;
+      keys.add(descriptor.key);
+      descriptors.push(descriptor);
+    };
+    const itemKeys = new Map(originalRecords.map((record, index) => [String(record.id), 'item-' + String(index + 1).padStart(3, '0')]));
+    originalRecords.forEach((record, index) => {
       const itemKey = 'item-' + String(index + 1).padStart(3, '0');
       if (opts.includePhotos) {
         (Array.isArray(record.images) ? record.images : []).forEach((id, photoIndex) => {
-          descriptors.push({
+          add({
             key: String(id),
             itemKey,
+            recordKind: 'firearm',
+            recordId: String(record.id),
             kind: 'photo',
             basePath: 'media/' + itemKey + '/photo-' + String(photoIndex + 1).padStart(2, '0'),
             fallbackData: null
@@ -279,13 +312,15 @@
         const key = String(record.receipt).startsWith('@media:')
           ? String(record.receipt).slice(7)
           : 'receipt:firearm:' + record.id;
-        descriptors.push({ key, itemKey, kind: 'receipt', basePath: 'media/' + itemKey + '/receipt', fallbackData: String(record.receipt).startsWith('data:') ? record.receipt : null });
+        add({ key, itemKey, recordKind: 'firearm', recordId: String(record.id), kind: 'receipt', basePath: 'media/' + itemKey + '/receipt', fallbackData: String(record.receipt).startsWith('data:') ? record.receipt : null });
       }
       if (opts.includeDocuments) {
         (Array.isArray(record.documents) ? record.documents : []).forEach((documentRecord, documentIndex) => {
-          descriptors.push({
+          add({
             key: 'doc:' + record.id + ':' + documentRecord.id,
             itemKey,
+            recordKind: 'firearm',
+            recordId: String(record.id),
             kind: 'document',
             basePath: 'media/' + itemKey + '/document-' + String(documentIndex + 1).padStart(2, '0'),
             fallbackData: documentRecord.data || null,
@@ -297,9 +332,38 @@
         const key = String(record.stampPdf).startsWith('@media:')
           ? String(record.stampPdf).slice(7)
           : 'stamp:firearm:' + record.id;
-        descriptors.push({ key, itemKey, kind: 'tax-stamp', basePath: 'media/' + itemKey + '/tax-stamp', fallbackData: String(record.stampPdf).startsWith('data:') ? record.stampPdf : null });
+        add({ key, itemKey, recordKind: 'firearm', recordId: String(record.id), kind: 'tax-stamp', basePath: 'media/' + itemKey + '/tax-stamp', fallbackData: String(record.stampPdf).startsWith('data:') ? record.stampPdf : null });
       }
     });
+    if (opts.includeAccessories) {
+      const accessories = (Array.isArray(data.accessories) ? data.accessories : []).filter(accessory =>
+        itemKeys.has(String(global.VaultEquipment ? VaultEquipment.currentHostId(accessory) : accessory.firearmId)));
+      const sourceIds = new Set();
+      accessories.forEach((accessory, index) => {
+        const sourceId = String(accessory.id || '');
+        if (!sourceId || sourceIds.has(sourceId)) return;
+        sourceIds.add(sourceId);
+        const hostId = global.VaultEquipment ? VaultEquipment.currentHostId(accessory) : accessory.firearmId;
+        const itemKey = itemKeys.get(String(hostId));
+        const basePath = 'media/' + itemKey + '/accessory-' + String(index + 1).padStart(3, '0');
+        if (opts.includePhotos) {
+          (Array.isArray(accessory.images) ? accessory.images : []).forEach((id, photoIndex) => {
+            add({
+              key: String(id), itemKey, recordKind: 'accessory', recordId: sourceId, kind: 'photo',
+              basePath: basePath + '/photo-' + String(photoIndex + 1).padStart(2, '0'), fallbackData: null
+            });
+          });
+        }
+        if (opts.includeReceipts && accessory.receipt) {
+          const reference = String(accessory.receipt);
+          const key = reference.startsWith('@media:') ? reference.slice(7) : 'receipt:accessory:' + sourceId;
+          add({
+            key, itemKey, recordKind: 'accessory', recordId: sourceId, kind: 'receipt',
+            basePath: basePath + '/receipt', fallbackData: reference.startsWith('data:') ? accessory.receipt : null
+          });
+        }
+      });
+    }
     return descriptors;
   }
 
@@ -500,12 +564,12 @@
     const headers = ['Make / Model'];
     if (snapshot.privacy.serialNumbers !== 'omit') headers.push(snapshot.privacy.serialNumbers === 'last4' ? 'Serial (last 4)' : 'Serial');
     headers.push('Caliber', 'Type', 'Condition', snapshot.privacy.exactDates ? 'Acquired' : 'Acquired year');
-    if (snapshot.privacy.values) headers.push('Documented value');
+    if (snapshot.privacy.values) headers.push(snapshot.valueBasis === 'replacement' ? 'Replacement value' : 'Purchase cost');
     const body = snapshot.items.map(item => {
       const row = [[item.make, item.model].filter(Boolean).join(' ') || 'Untitled item'];
       if (snapshot.privacy.serialNumbers !== 'omit') row.push(item.serial || '—');
       row.push(item.caliber || '—', item.type || '—', item.condition || '—', item.acquired || '—');
-      if (snapshot.privacy.values) row.push(money(item.documentedValue));
+      if (snapshot.privacy.values) row.push(item.documentedValue === null ? 'Not recorded' : money(item.documentedValue));
       return row;
     });
     doc.autoTable({
@@ -520,6 +584,7 @@
     doc.setFontSize(8);
     doc.setFont(undefined, 'normal');
     const notes = [];
+    if (snapshot.privacy.values && snapshot.totals.missingValues) notes.push(snapshot.totals.missingValues + ' values are not recorded and are excluded from the total.');
     if (snapshot.privacy.serialNumbers === 'omit') notes.push('Serial numbers are omitted.');
     else if (snapshot.privacy.serialNumbers === 'last4') notes.push('Only the last four serial-number characters are shown.');
     if (snapshot.privacy.photos) notes.push('Review included photos separately; visible markings in a photo are not automatically redacted.');
@@ -565,7 +630,7 @@
     await ensureAsset('zip', 'ZIP report export');
     if (!global.JSZip) throw new Error('The ZIP report library did not initialize.');
     const snapshot = buildSnapshot(records, opts, sourceDb);
-    const descriptors = mediaDescriptors(records, opts);
+    const descriptors = mediaDescriptors(records, opts, sourceDb);
     await verifySelectedMedia(descriptors);
     const zip = new global.JSZip();
     const files = [];
@@ -684,6 +749,7 @@
       password: controlValue('reportPackagePassword', ''),
       includeDisposed: controlChecked('reportPackageIncludeDisposed', false),
       includeValues: controlChecked('reportPackageIncludeValues', true),
+      valueBasis: controlValue('reportPackageValueBasis', 'purchase'),
       includePhotos: controlChecked('reportPackageIncludePhotos', mode === 'full'),
       includeReceipts: controlChecked('reportPackageIncludeReceipts', mode === 'full'),
       includeDocuments: controlChecked('reportPackageIncludeDocuments', mode === 'full'),

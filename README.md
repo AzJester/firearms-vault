@@ -10,6 +10,17 @@ committed to this repository or included in the deployment artifact.
 
 ## Current status
 
+Version 2.4 adds review-before-save copying, purchase and service stages,
+replacement valuations, one-record equipment links across multiple hosts,
+range sessions with paired ammunition/count updates and safe undo, maintenance
+intervals, named account-synced views, and reviewed batch edits. Reports offer
+purchase-cost or replacement-value totals and include current equipment once.
+Missing replacement values are shown as unknown rather than estimated.
+
+All new fields are additive within existing owner-scoped collection documents.
+Existing records, attachments, approvals, and backups remain compatible. No
+database migration, personal-data export, or bulk rewrite is required.
+
 The firearm type selectors include SBR and SBS. Selecting either type or a
 suppressor sets its NFA classification without creating a pending application.
 Approval form, status, registration type, dates, and attachments remain optional

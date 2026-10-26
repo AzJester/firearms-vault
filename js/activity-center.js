@@ -211,6 +211,31 @@
     return !!(entry && entry.before && entry.recordId && entry.collection && Array.isArray(db[entry.collection]));
   }
 
+  // A range session changes the firearm and its ammunition lot together.
+  // Single-record history restores cannot safely reverse either half alone.
+  function rangeRestoreConflict(collection, recordId, restored) {
+    const current = (db[collection] || []).find(record => String(record.id) === String(recordId));
+    const sessions = record => record && record.rangeSessions || [];
+    const activeSessions = record => Array.isArray(sessions(record)) && sessions(record).some(session => session && !session.undoneAt);
+    const count = value => value === '' || value == null ? 0 : Number(value);
+    if (collection === 'firearms') {
+      const canonical = value => JSON.stringify(value, (key, child) => child && typeof child === 'object' && !Array.isArray(child)
+        ? Object.fromEntries(Object.keys(child).sort().map(name => [name, child[name]])) : child);
+      if (canonical(sessions(current)) !== canonical(sessions(restored))) return true;
+      if ((activeSessions(current) || activeSessions(restored)) && count(current && current.roundCount) !== count(restored && restored.roundCount)) return true;
+    }
+    if (collection === 'ammo' && count(current && current.quantity) !== count(restored && restored.quantity)) {
+      return (db.firearms || []).some(firearm => Array.isArray(firearm.rangeSessions) && firearm.rangeSessions.some(session => session && !session.undoneAt && String(session.ammoId) === String(recordId)));
+    }
+    return false;
+  }
+
+  function guardRangeRestore(collection, recordId, restored) {
+    if (!rangeRestoreConflict(collection, recordId, restored)) return null;
+    global.toast && toast('This restore would separate range-session history from ammunition and lifetime rounds. Use Undo session in the firearm\'s Range sessions section first.', 'error', 10000);
+    return { ok: false, status: 'range-session-conflict', recordId };
+  }
+
   function renderChanges(entry) {
     const changes = Array.isArray(entry.changes) && entry.changes.length
       ? entry.changes
@@ -282,17 +307,23 @@
       global.toast && toast('This older activity entry does not contain a restorable record snapshot.', 'error');
       return { ok: false, status: 'snapshot-unavailable' };
     }
+    const collection = entry.collection;
+    const restored = clone(entry.before);
+    const initialConflict = guardRangeRestore(collection, entry.recordId, restored);
+    if (initialConflict) return initialConflict;
     const approved = await confirmDialog('Restore only "' + entry.itemName + '" to its state before this activity? The rest of the collection will not change.', {
       title: 'Restore one record', okText: 'Restore record', danger: true
     });
     if (!approved) return { ok: false, status: 'cancelled' };
+    const confirmedConflict = guardRangeRestore(collection, entry.recordId, restored);
+    if (confirmedConflict) return confirmedConflict;
 
-    const collection = entry.collection;
-    const currentIndex = db[collection].findIndex(record => String(record.id) === String(entry.recordId));
-    const current = currentIndex >= 0 ? clone(db[collection][currentIndex]) : null;
-    const restored = clone(entry.before);
+    return withFormSaveLock('activity-restore', null, async () => {
+    let current = null;
+    let recordChanged = false;
     let auditLength = null;
     const rollbackRecord = () => {
+      if (!recordChanged) return;
       const index = db[collection].findIndex(record => String(record.id) === String(entry.recordId));
       if (current) {
         if (index >= 0) db[collection][index] = clone(current); else db[collection].push(clone(current));
@@ -306,9 +337,6 @@
           activityEntryId: entry.id, recordId: entry.recordId, collection
         });
       }
-      if (currentIndex >= 0) db[collection][currentIndex] = restored;
-      else db[collection].push(restored);
-
       const mediaKeys = recordMediaKeys(collection, restored);
       let mediaResult = { ok: true, failures: [] };
       if (mediaKeys.length && global.CloudSync && CloudSync.downloadMedia) {
@@ -326,8 +354,6 @@
       const unverified = [...new Set([...unavailable, ...failedKeys])];
       if (!mediaResult.ok && !unverified.length) unverified.push(...mediaKeys);
       if (unverified.length) {
-        rollbackRecord();
-        render();
         const continueWithoutFiles = await confirmDialog(
           'The earlier record references ' + unverified.length + ' attachment' + (unverified.length === 1 ? '' : 's') + ' whose original bytes could not be verified. Restore its fields anyway and mark those files unavailable?',
           { title: 'Older attachments unavailable', okText: 'Restore fields only', danger: true }
@@ -336,8 +362,17 @@
           renderActivityCenter();
           return { ok: false, status: 'attachment-unavailable', missingMedia: unverified };
         }
-        const refreshedIndex = db[collection].findIndex(record => String(record.id) === String(entry.recordId));
-        if (refreshedIndex >= 0) db[collection][refreshedIndex] = restored; else db[collection].push(restored);
+      }
+      // Confirmation, backup creation and media checks all yield to other
+      // work. Read the live record again immediately before replacing it.
+      const latestConflict = guardRangeRestore(collection, entry.recordId, restored);
+      if (latestConflict) return latestConflict;
+      const currentIndex = db[collection].findIndex(record => String(record.id) === String(entry.recordId));
+      current = currentIndex >= 0 ? clone(db[collection][currentIndex]) : null;
+      if (currentIndex >= 0) db[collection][currentIndex] = restored;
+      else db[collection].push(restored);
+      recordChanged = true;
+      if (unverified.length) {
         if (global.CloudSync) {
           const existing = Array.isArray(CloudSync.missingMedia) ? CloudSync.missingMedia : [];
           const byKey = new Map(existing.map(item => [String(item && item.key || ''), item]));
@@ -381,6 +416,7 @@
       toast('The record was not restored: ' + (error.message || error), 'error', 9000);
       return { ok: false, status: 'failed', error };
     }
+    });
   }
 
   function init() {

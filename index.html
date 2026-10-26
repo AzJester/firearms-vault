@@ -15,6 +15,10 @@
 <link rel="stylesheet" href="css/fonts.css">
 <link rel="stylesheet" href="css/styles.css">
 <link rel="stylesheet" href="css/vault-ui.css">
+<link rel="stylesheet" href="css/item-details.css">
+<link rel="stylesheet" href="css/equipment-links.css">
+<link rel="stylesheet" href="css/range-sessions.css">
+<link rel="stylesheet" href="css/collection-tools.css">
 <!-- Self-hosted dependencies: no third-party script can read the private app origin. -->
 <script src="vendor/supabase.js"></script>
 </head>
@@ -284,11 +288,12 @@
         </div>
         <fieldset class="report-package-options"><legend>Include</legend>
           <label><input type="checkbox" id="reportPackageIncludeValues" checked> Documented values</label>
+          <label for="reportPackageValueBasis">Value basis<select id="reportPackageValueBasis"><option value="purchase">Purchase cost</option><option value="replacement">Replacement / appraised value</option></select></label>
           <label><input type="checkbox" id="reportPackageIncludePhotos" checked> Firearm photos</label>
           <label><input type="checkbox" id="reportPackageIncludeReceipts" checked> Receipts</label>
           <label><input type="checkbox" id="reportPackageIncludeDocuments" checked> Ownership documents</label>
           <label><input type="checkbox" id="reportPackageIncludeTaxStamps" checked> Tax stamps</label>
-          <label><input type="checkbox" id="reportPackageIncludeAccessories" checked> Assigned accessories</label>
+          <label><input type="checkbox" id="reportPackageIncludeAccessories" checked> Currently assigned equipment</label>
           <label><input type="checkbox" id="reportPackageIncludeExactDates" checked> Exact acquisition dates</label>
           <label><input type="checkbox" id="reportPackageIncludeDisposed"> Sold / transferred items</label>
           <label><input type="checkbox" id="reportPackageIncludeNotes"> Private notes</label>
@@ -366,7 +371,7 @@
             <option value="Other">Other</option>
           </select>
         </div>
-        <div class="form-group"><label>Round Count at Entry</label><input type="number" id="mRoundCount" min="0"></div>
+        <div class="form-group"><label>Lifetime round count at service</label><input type="number" id="mRoundCount" min="0" step="1"></div>
         <div class="form-group"><label>Parts Used</label><input type="text" id="mParts" placeholder="e.g. Spring, Extractor"></div>
         <div class="form-group full"><label>Description</label>
           <div class="rte-wrapper">
@@ -463,14 +468,14 @@
       <h1>Firearms Vault</h1>
       <p>Private collection manager</p>
     </div>
-    <span class="version-badge">v2.2 &middot; Cloud</span>
+    <span class="version-badge">v2.4 &middot; Cloud</span>
   </div>
   <div class="header-right">
     <div class="header-stats">
       <div><span class="stat-lbl">Total</span><span class="stat-val" id="statTotal">0</span></div>
       <div><span class="stat-lbl">NFA</span><span class="stat-val" id="statNFA">0</span></div>
       <div><span class="stat-lbl">Ammo</span><span class="stat-val" id="statAmmo">0</span></div>
-      <div><span class="stat-lbl">Value</span><span class="stat-val" id="statValue">$0</span></div>
+      <div><span class="stat-lbl">Purchase cost</span><span class="stat-val" id="statValue">$0</span></div>
     </div>
     <button class="bell-btn" id="cmdkBtn" onclick="openCmdK()" title="Search / commands (Ctrl or &#8984; K)" aria-label="Search"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
     <button class="bell-btn" id="reminderBell" onclick="openReminders()" title="Reminders" aria-label="Reminders"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="bell-badge" id="reminderBadge" style="display:none;">0</span></button>
@@ -820,6 +825,9 @@
         </div>
         <div class="form-group"><label>Lifetime Round Count</label><input type="number" id="fRoundCount" min="0" placeholder="0"></div>
         <div class="form-group"><label>Warranty Expiration</label><input type="date" id="fWarrantyExp"></div>
+        <div class="form-group"><label for="fMaintenanceIntervalRounds">Service interval (rounds)</label><input type="number" id="fMaintenanceIntervalRounds" min="1" step="1" placeholder="Blank disables round reminders"></div>
+        <div class="form-group"><label for="fMaintenanceIntervalDays">Service interval (days)</label><input type="number" id="fMaintenanceIntervalDays" min="1" step="1" placeholder="Blank disables date reminders"></div>
+        <div class="form-group full"><label for="fMaintenanceBaselineRounds">Lifetime rounds at maintenance baseline</label><input type="number" id="fMaintenanceBaselineRounds" min="0" step="1" placeholder="Optional, used when the service log has no lifetime reading"></div>
         <!-- Custom Fields -->
         <div class="form-group full">
           <label>Custom Fields</label>
@@ -987,6 +995,9 @@
         <div class="form-group"><label>Model / Part #</label><input type="text" id="accModel" placeholder="e.g. RZR-31502"></div>
         <div class="form-group"><label>Serial Number</label><input type="text" id="accSerial" placeholder="If applicable"></div>
         <div class="form-group"><label>Purchase Price ($)</label><input type="number" id="accPrice" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label for="accReplacementValue">Replacement / appraised value ($)</label><input type="number" id="accReplacementValue" min="0" step="0.01" placeholder="Not recorded"></div>
+        <div class="form-group"><label for="accValuationDate">Valuation date</label><input type="date" id="accValuationDate"></div>
+        <div class="form-group full"><label for="accValuationSource">Valuation source</label><input type="text" id="accValuationSource" maxlength="1000" placeholder="Appraiser, dealer, or comparable listing"></div>
         <div class="form-group"><label>Purchase Date</label><input type="date" id="accDate"></div>
         <div class="form-group"><label>Condition</label>
           <select id="accCondition">
@@ -1453,6 +1464,7 @@
 <script src="js/config.js"></script>
 <script src="js/supabase-client.js"></script>
 <script src="js/security.js"></script>
+<script src="js/collection-model.js"></script>
 <script src="js/data-safety.js"></script>
 <script src="js/asset-loader.js"></script>
 <script src="js/data-quality.js"></script>
@@ -1463,6 +1475,11 @@
 <script src="js/activity-center.js"></script>
 <script src="js/quick-capture.js"></script>
 <script src="js/report-packages.js"></script>
+<script src="js/item-details.js"></script>
+<script src="js/equipment-links.js"></script>
+<script src="js/range-sessions.js"></script>
+<script src="js/collection-tools.js"></script>
+<script src="js/collection-init.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/action-runtime.js"></script>
 <script src="js/ui-shell.js"></script>

@@ -223,6 +223,15 @@ async function probeOnce(config) {
   if (!/<div\s+id=["']appRoot["']/i.test(html) || !/<form\s+id=["']authForm["']/i.test(html)) {
     throw fail('content', 'The production entry point does not contain the expected vault application shell.');
   }
+  // Feature modules declared by the page are required too. Checking only a
+  // hand-maintained core list could report success with a missing new feature.
+  const declaredAssets = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)=["']([^"']+)["']/gi)]
+    .map(match => match[1].split('?')[0])
+    .filter(file => /^(?:js|css|vendor)\/[A-Za-z0-9_./-]+\.(?:js|css)$/.test(file));
+  const additionalPaths = [...new Set(declaredAssets)].filter(file => !criticalPaths.includes(file) && file !== 'js/config.js');
+  const additional = await Promise.all(additionalPaths.map(file => fetchResource(config, file, `required feature asset ${file}`)));
+  additional.forEach(resource => requireContentType(resource, resource.path.endsWith('.css') ? ['text/css'] : ['application/javascript', 'text/javascript']));
+  critical.push(...additional);
 
   const buildInfo = parseJson(build);
   validateBuild(buildInfo, config.expectedRevision);
