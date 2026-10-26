@@ -1739,7 +1739,7 @@ function computeReminders() {
   active.forEach(f => {
     const name = ((f.make || '') + ' ' + (f.model || '')).trim() || 'Firearm';
     // NFA tax stamp still pending
-    if (f.isNFA && f.dateSubmitted && !f.dateApproved && f.stampStatus !== 'Approved' && f.stampStatus !== 'Denied') {
+    if (f.isNFA && f.dateSubmitted && !f.dateApproved && ['Pending', 'Submitted'].includes(f.stampStatus)) {
       const days = Math.round((Date.now() - new Date(f.dateSubmitted)) / 86400000);
       out.push({ sev: 'med', icon: '&#128196;', itemType: 'firearm', itemId: f.id,
         text: name + ' — tax stamp pending ' + days + ' day' + (days === 1 ? '' : 's') });
@@ -2090,7 +2090,7 @@ function renderDashboard() {
   const nfaApproved = nfaItems.filter(f => f.stampStatus === 'Approved').length;
   const nfaPending = nfaItems.filter(f => f.stampStatus === 'Pending' || f.stampStatus === 'Submitted').length;
   const nfaDenied = nfaItems.filter(f => f.stampStatus === 'Denied').length;
-  const pendingNFA = nfaItems.filter(f => f.dateSubmitted && !f.dateApproved);
+  const pendingNFA = nfaItems.filter(f => f.dateSubmitted && !f.dateApproved && ['Pending', 'Submitted'].includes(f.stampStatus));
   const avgWait = pendingNFA.length ? Math.round(pendingNFA.reduce((s, f) => s + (Date.now() - new Date(f.dateSubmitted)) / 86400000, 0) / pendingNFA.length) : null;
 
   // Condition / recent / tags
@@ -2233,7 +2233,8 @@ function getFilteredItems() {
     (f.notes||'').replace(/<[^>]*>/g,'').toLowerCase().includes(search) || (f.nfaType||'').toLowerCase().includes(search) ||
     (f.tags||[]).some(t => t.toLowerCase().includes(search)));
 
-  if (tf && currentTab !== 'ammo') items = items.filter(f => f.type === tf);
+  if (tf && currentTab !== 'ammo') items = items.filter(f => f.type === tf ||
+    (f.isNFA && ['SBR', 'SBS'].includes(tf) && f.nfaType === tf));
   if (cf && currentTab !== 'ammo') items = items.filter(f => f.caliber === cf);
   if (tagFilter) items = items.filter(f => f.tags && f.tags.includes(tagFilter));
   const condFilter = document.getElementById('filterCondition').value;
@@ -4022,9 +4023,9 @@ function clearForm() {
   document.getElementById('fStatus').value='Active';
   document.getElementById('fIsNFA').checked=false;
   document.getElementById('fNFAType').value='SBR';
-  document.getElementById('fFormType').value='Form 1';
-  document.getElementById('fStampStatus').value='Pending';
-  document.getElementById('fRegType').value='Individual';
+  document.getElementById('fFormType').value='';
+  document.getElementById('fStampStatus').value='';
+  document.getElementById('fRegType').value='';
   toggleNFAFields();
   toggleDispositionFields();
   tempImages=[];
@@ -4062,11 +4063,11 @@ function populateForm(f) {
 
   if(f.isNFA){
     document.getElementById('fNFAType').value=f.nfaType||'SBR';
-    document.getElementById('fFormType').value=f.formType||'Form 1';
+    document.getElementById('fFormType').value=f.formType||'';
     document.getElementById('fDateSubmitted').value=f.dateSubmitted||'';
     document.getElementById('fDateApproved').value=f.dateApproved||'';
-    document.getElementById('fStampStatus').value=f.stampStatus||'Pending';
-    document.getElementById('fRegType').value=f.regType||'Individual';
+    document.getElementById('fStampStatus').value=f.stampStatus||'';
+    document.getElementById('fRegType').value=f.regType||'';
   }
   toggleNFAFields();
 
@@ -4100,6 +4101,22 @@ function populateForm(f) {
 }
 
 function toggleNFAFields() { document.getElementById('nfaFields').style.display=document.getElementById('fIsNFA').checked?'block':'none'; }
+
+// Classifications and approval history are independent. Selecting a covered
+// type records its classification without inventing an application or status.
+function syncFirearmTypeClassification() {
+  const nfaType = { SBR: 'SBR', SBS: 'SBS', Silencer: 'Suppressor' }[document.getElementById('fType').value];
+  if (!nfaType) return;
+  document.getElementById('fIsNFA').checked = true;
+  document.getElementById('fNFAType').value = nfaType;
+  toggleNFAFields();
+}
+document.getElementById('fType').addEventListener('change', syncFirearmTypeClassification);
+document.getElementById('fNFAType').addEventListener('change', () => {
+  const type = { SBR: 'SBR', SBS: 'SBS', Suppressor: 'Silencer' }[document.getElementById('fNFAType').value];
+  if (type) document.getElementById('fType').value = type;
+  else if (['SBR', 'SBS', 'Silencer'].includes(document.getElementById('fType').value)) document.getElementById('fType').value = 'Other';
+});
 
 function toggleDispositionFields() {
   const status = document.getElementById('fStatus').value;
@@ -4301,7 +4318,7 @@ function handleStampUpload(e) {
 
 function removeStampPdf() { tempStampPdf=null; tempStampPdfName=null; resetStampUpload(); saveFirearmDraftSoon(); }
 function resetStampUpload() {
-  document.getElementById('stampUploadArea').innerHTML='<span class="upload-text">Click to upload approved tax stamp PDF</span>';
+  document.getElementById('stampUploadArea').innerHTML='<span class="upload-text">Click to upload an approval or historical tax stamp PDF</span>';
   const remove = document.getElementById('stampRemove'); if (remove) remove.hidden = true;
 }
 function showStampInUploadArea(data, name) {
@@ -4915,10 +4932,10 @@ function openDetail(id) {
     const sd=fmtDate(f.dateSubmitted);const ad=fmtDate(f.dateApproved);
     let wd='';
     if(f.dateSubmitted&&f.dateApproved){const d=Math.round((new Date(f.dateApproved)-new Date(f.dateSubmitted))/86400000);wd=`<div class="detail-field"><label>Wait Time</label><span>${d} days</span></div>`;}
-    else if(f.dateSubmitted&&!f.dateApproved){const d=Math.round((new Date()-new Date(f.dateSubmitted))/86400000);wd=`<div class="detail-field"><label>Waiting</label><span>${d} days so far</span></div>`;}
+    else if(f.dateSubmitted&&!f.dateApproved&&['Pending','Submitted'].includes(f.stampStatus)){const d=Math.round((new Date()-new Date(f.dateSubmitted))/86400000);wd=`<div class="detail-field"><label>Waiting</label><span>${d} days so far</span></div>`;}
     let si='';
     if(f.stampPdf){si=`<div style="margin-top:12px;"><label style="display:block;font-size:0.7rem;color:var(--text3);text-transform:uppercase;margin-bottom:6px;font-weight:600;">Tax Stamp PDF</label><a href="${f.stampPdf}" download="${esc(f.stampPdfName||'tax_stamp.pdf')}" style="display:inline-flex;align-items:center;gap:8px;padding:10px 16px;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:0.84rem;font-weight:600;" onclick="event.stopPropagation();">&#128196; ${esc(f.stampPdfName||'tax_stamp.pdf')} — Download</a><button onclick="event.stopPropagation();viewStampPdf('${f.id}')" style="margin-left:8px;padding:10px 16px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.84rem;font-weight:600;cursor:pointer;">View in Browser</button></div>`;}
-    nfaH=`<div class="detail-section detail-nfa-section"><h3>NFA / Tax Stamp Details</h3><div class="detail-grid">
+    nfaH=`<div class="detail-section detail-nfa-section"><h3>NFA Records / Approval History</h3><div class="detail-grid">
       <div class="detail-field"><label>NFA Type</label><span>${esc(f.nfaType||'--')}</span></div>
       <div class="detail-field"><label>Form Type</label><span>${esc(f.formType||'--')}</span></div>
       <div class="detail-field"><label>Status</label><span>${esc(f.stampStatus||'--')}</span></div>
@@ -5220,7 +5237,7 @@ async function exportExcel() {
   const allRows=db.firearms.map(f=>({'Make':f.make||'','Model':f.model||'','Serial Number':f.serial||'','Caliber':f.caliber||'','Type':f.type||'','Barrel Length':f.barrel||'','Date Acquired':fmtDate(f.dateAcquired),'Purchase Price':f.price?parseFloat(f.price):'','Condition':f.condition||'','Status':f.status||'Active','NFA Item':f.isNFA?'Yes':'No','Tags':(f.tags||[]).join(', '),'Notes':(f.notes||'').replace(/<[^>]*>/g,'')}));
   const nfaRows=db.firearms.filter(f=>f.isNFA).map(f=>{
     let w='';if(f.dateSubmitted&&f.dateApproved)w=Math.round((new Date(f.dateApproved)-new Date(f.dateSubmitted))/86400000);
-    else if(f.dateSubmitted)w=Math.round((new Date()-new Date(f.dateSubmitted))/86400000)+' (pending)';
+    else if(f.dateSubmitted&&['Pending','Submitted'].includes(f.stampStatus))w=Math.round((new Date()-new Date(f.dateSubmitted))/86400000)+' (pending)';
     return{'Make':f.make||'','Model':f.model||'','Serial Number':f.serial||'','Caliber':f.caliber||'','NFA Type':f.nfaType||'','Form Type':f.formType||'','Date Submitted':fmtDate(f.dateSubmitted),'Date Approved':fmtDate(f.dateApproved),'Stamp Status':f.stampStatus||'','Registration Type':f.regType||'','Wait Time (Days)':w,'Purchase Price':f.price?parseFloat(f.price):''};
   });
   const ammoRows = db.ammo.map(a => ({'Caliber':a.caliber||'','Brand/Type':a.brand||'','Quantity':a.quantity||'','Purchase Date':fmtDate(a.purchaseDate),'Price Per Round':a.pricePerRound?parseFloat(a.pricePerRound):'','Location':a.location||'','Notes':(a.notes||'').replace(/<[^>]*>/g,'')}));
@@ -5749,6 +5766,7 @@ async function moveWishlistToCollection(id) {
   document.getElementById('fModel').value = w.model || '';
   document.getElementById('fCaliber').value = w.caliber || '';
   document.getElementById('fType').value = w.type || 'Rifle';
+  syncFirearmTypeClassification();
   document.getElementById('fPrice').value = w.price || '';
   pendingWishlistMoveId = id;
   saveFirearmDraftSoon();

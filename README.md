@@ -10,6 +10,15 @@ committed to this repository or included in the deployment artifact.
 
 ## Current status
 
+The firearm type selectors include SBR and SBS. Selecting either type or a
+suppressor sets its NFA classification without creating a pending application.
+Approval form, status, registration type, dates, and attachments remain optional
+collection records, and existing approval history is preserved. The form links
+to ATF's October 9, 2026 enforcement guidance, explains the covered categories,
+and retains the state/local-law and interstate SBR/SBS Form 20 distinctions.
+Machine guns and destructive devices remain subject to the full NFA process.
+No database migration or bulk rewrite of collection records is needed.
+
 The application and its Supabase project are active. The hosted build is
 published from this repository through a test-gated GitHub Pages workflow.
 Open registration is disabled; access is limited to accounts created by the

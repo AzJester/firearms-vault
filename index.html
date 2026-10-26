@@ -249,7 +249,7 @@
           <div class="form-group"><label for="quickCaptureModel">Model</label><input id="quickCaptureModel" type="text" autocomplete="off"></div>
           <div class="form-group"><label for="quickCaptureSerial">Serial number</label><input id="quickCaptureSerial" type="text" autocomplete="off"></div>
           <div class="form-group"><label for="quickCaptureCaliber">Caliber / gauge</label><input id="quickCaptureCaliber" type="text" list="caliberList" autocomplete="off"></div>
-          <div class="form-group"><label for="quickCaptureType">Type</label><select id="quickCaptureType"><option value="">Not suggested</option><option>Rifle</option><option>Pistol</option><option>Shotgun</option><option>Revolver</option><option>Silencer</option><option>Other</option></select></div>
+          <div class="form-group"><label for="quickCaptureType">Type</label><select id="quickCaptureType"><option value="">Not suggested</option><option>Rifle</option><option>Pistol</option><option>Shotgun</option><option>Revolver</option><option value="SBR">SBR (Short-Barreled Rifle)</option><option value="SBS">SBS (Short-Barreled Shotgun)</option><option value="Silencer">Suppressor / Silencer</option><option>Other</option></select></div>
           <details class="form-group full quick-capture-raw"><summary>Show extracted text</summary><textarea id="quickCaptureRawText" rows="4" aria-label="Extracted text"></textarea></details>
         </div>
         <button type="button" class="btn btn-outline btn-small" onclick="openQuickCaptureExistingMatch()">Open matching record</button>
@@ -598,7 +598,9 @@
     <option value="Pistol">Pistol</option>
     <option value="Shotgun">Shotgun</option>
     <option value="Revolver">Revolver</option>
-    <option value="Silencer">Silencer</option>
+    <option value="SBR">SBR (Short-Barreled Rifle)</option>
+    <option value="SBS">SBS (Short-Barreled Shotgun)</option>
+    <option value="Silencer">Suppressor / Silencer</option>
     <option value="Other">Other</option>
   </select>
   <select class="filter-select" id="filterCaliber">
@@ -765,7 +767,7 @@
         <div class="form-group"><label>Serial Number</label><input type="text" id="fSerial" placeholder="e.g. ABC12345" oninput="checkDuplicateSerial()"><div class="serial-warning" id="serialWarning" style="display:none;"></div></div>
         <div class="form-group"><label>Caliber / Gauge</label><input type="text" id="fCaliber" list="caliberList" placeholder="e.g. 5.56 NATO"></div>
         <div class="form-group"><label>Type</label>
-          <select id="fType"><option value="Rifle">Rifle</option><option value="Pistol">Pistol</option><option value="Shotgun">Shotgun</option><option value="Revolver">Revolver</option><option value="Silencer">Silencer</option><option value="Other">Other</option></select>
+          <select id="fType"><option value="Rifle">Rifle</option><option value="Pistol">Pistol</option><option value="Shotgun">Shotgun</option><option value="Revolver">Revolver</option><option value="SBR">SBR (Short-Barreled Rifle)</option><option value="SBS">SBS (Short-Barreled Shotgun)</option><option value="Silencer">Suppressor / Silencer</option><option value="Other">Other</option></select>
         </div>
         <div class="form-group"><label>Barrel Length</label><input type="text" id="fBarrel" placeholder='e.g. 16"'></div>
         <div class="form-group"><label>Date Acquired</label><input type="date" id="fDateAcquired"></div>
@@ -830,25 +832,26 @@
         </div>
         <div id="nfaFields" style="display:none; grid-column:1/-1;">
           <div class="form-grid">
-            <div class="form-section-title">NFA / Tax Stamp Details</div>
+            <div class="form-section-title">NFA Records / Approval History</div>
+            <p class="nfa-guidance" id="nfaGuidance">Under <a href="https://www.atf.gov/firearms/update-to-nfa-transfer-guidance" target="_blank" rel="noopener noreferrer">ATF's October 9, 2026 guidance</a>, prior NFA making/transfer approvals and registration are not currently enforced for SBRs, SBSs, suppressors, and AOWs. Approval records below are optional for those items. State/local laws still apply. Interstate SBR/SBS transport still requires approved Form 20. Full NFA requirements continue for machine guns and destructive devices.</p>
             <div class="form-group"><label>NFA Item Type</label>
               <select id="fNFAType"><option value="SBR">SBR (Short Barreled Rifle)</option><option value="SBS">SBS (Short Barreled Shotgun)</option><option value="Suppressor">Suppressor</option><option value="Machine Gun">Machine Gun</option><option value="AOW">AOW (Any Other Weapon)</option><option value="Destructive Device">Destructive Device</option></select>
             </div>
             <div class="form-group"><label>Form Type</label>
-              <select id="fFormType"><option value="Form 1">Form 1 (Make)</option><option value="Form 4">Form 4 (Transfer)</option></select>
+              <select id="fFormType"><option value="">Not tracked</option><option value="Form 1">Form 1 (Make)</option><option value="Form 4">Form 4 (Transfer)</option></select>
             </div>
             <div class="form-group"><label>Date Submitted</label><input type="date" id="fDateSubmitted"></div>
             <div class="form-group"><label>Date Approved</label><input type="date" id="fDateApproved"></div>
-            <div class="form-group"><label>Tax Stamp Status</label>
-              <select id="fStampStatus"><option value="Pending">Pending</option><option value="Submitted">Submitted</option><option value="Approved">Approved</option><option value="Denied">Denied</option></select>
+            <div class="form-group"><label>Approval Record Status</label>
+              <select id="fStampStatus"><option value="">Not tracked</option><option value="Pending">Pending</option><option value="Submitted">Submitted</option><option value="Approved">Approved</option><option value="Denied">Denied</option></select>
             </div>
             <div class="form-group"><label>Registration Type</label>
-              <select id="fRegType"><option value="Individual">Individual</option><option value="Trust">Trust</option><option value="Corporation">Corporation</option></select>
+              <select id="fRegType"><option value="">Not tracked</option><option value="Individual">Individual</option><option value="Trust">Trust</option><option value="Corporation">Corporation</option></select>
             </div>
             <div class="form-group full">
-              <label>Tax Stamp (PDF)</label>
+              <label>Approval / Tax Stamp Record (PDF)</label>
               <div class="img-upload-area" id="stampUploadArea" onclick="document.getElementById('stampInput').click()">
-                <span class="upload-text">Click to upload approved tax stamp PDF</span>
+                <span class="upload-text">Click to upload an approval or historical tax stamp PDF</span>
               </div>
               <input type="file" id="stampInput" accept="application/pdf" style="display:none" onchange="handleStampUpload(event)">
               <button type="button" class="btn btn-small btn-outline upload-remove-action" id="stampRemove" onclick="removeStampPdf()" hidden>Remove tax stamp</button>
@@ -1047,7 +1050,7 @@
         <div class="form-group"><label>Model</label><input type="text" id="wModel" placeholder="e.g. DDM4 V7"></div>
         <div class="form-group"><label>Caliber</label><input type="text" id="wCaliber" list="caliberList" placeholder="e.g. 5.56 NATO"></div>
         <div class="form-group"><label>Type</label>
-          <select id="wType"><option value="Rifle">Rifle</option><option value="Pistol">Pistol</option><option value="Shotgun">Shotgun</option><option value="Revolver">Revolver</option><option value="Silencer">Silencer</option><option value="Other">Other</option></select>
+          <select id="wType"><option value="Rifle">Rifle</option><option value="Pistol">Pistol</option><option value="Shotgun">Shotgun</option><option value="Revolver">Revolver</option><option value="SBR">SBR (Short-Barreled Rifle)</option><option value="SBS">SBS (Short-Barreled Shotgun)</option><option value="Silencer">Suppressor / Silencer</option><option value="Other">Other</option></select>
         </div>
         <div class="form-group"><label>Target Price ($)</label><input type="number" id="wPrice" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label>Priority</label>

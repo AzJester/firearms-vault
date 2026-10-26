@@ -14,7 +14,7 @@
     },
     nfa: {
       eyebrow: 'Regulated items', title: 'NFA items',
-      description: 'Tax-stamp status, submission dates, and regulated items.',
+      description: 'Item classifications and approval history, including optional records for SBRs, SBSs, and suppressors.',
       noun: 'NFA item', addLabel: 'Add NFA item', placeholder: 'Search NFA items…', filters: true
     },
     disposed: {
